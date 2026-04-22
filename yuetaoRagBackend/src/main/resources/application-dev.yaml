@@ -1,0 +1,125 @@
+server:
+  port: 9596
+
+spring:
+  application:
+    name: YueTaoRag
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 100MB
+
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    type: com.zaxxer.hikari.HikariDataSource
+    username: postgres
+    password: postgres
+    url: jdbc:postgresql://172.18.58.216:5432/yuetaorag?client_encoding=UTF8
+    hikari:
+      connection-timeout: 5000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      maximum-pool-size: 10
+      minimum-idle: 5
+      pool-name: YueTaoRag-HikariCP
+
+  data:
+    redis:
+      host: 172.18.58.216
+      port: 16379
+      password: zrq123
+      database: 1
+
+rocketmq:
+  name-server: 172.18.58.216:19876
+  producer:
+    group: yuetao-rag-producer
+    send-message-timeout: 2000
+    enable-msg-trace: true
+  consumer:
+    enable-msg-trace: true
+
+rustfs:
+  url: http://172.18.58.216:19000
+  access-key-id: rustfsadmin
+  secret-access-key: rustfsadmin
+  bucket: yuetao-rag-docs
+  public-base-url: http://172.18.58.216:19000/yuetao-rag-docs
+
+app:
+  ai:
+    providers:
+      bailian:
+        url: https://dashscope.aliyuncs.com
+        api-key: ${ALIYUN_ACCESS_KEY_ID:}
+        endpoints:
+          chat: /compatible-mode/v1/chat/completions
+          embedding: /compatible-mode/v1/embeddings
+          rerank: /api/v1/services/rerank/text-rerank/text-rerank
+      siliconflow:
+        url: https://api.siliconflow.cn
+        api-key: ${SILICONFLOW_API_KEY:}
+        endpoints:
+          chat: /v1/chat/completions
+    chat:
+      default-model: qwen-plus
+      deep-thinking-model: glm-4.7
+      candidates:
+        - id: qwen-plus
+          provider: bailian
+          enabled: true
+          model: qwen-plus
+          streaming-enabled: true
+          priority: 100
+        - id: deepseek-v3.2
+          provider: bailian
+          enabled: true
+          model: deepseek-v3.2
+          streaming-enabled: true
+          priority: 80
+        - id: glm-4.7
+          provider: siliconflow
+          enabled: true
+          model: Pro/zai-org/GLM-4.7
+          supports-thinking: true
+          streaming-enabled: true
+          priority: 60
+    embedding:
+      default-model: text-embedding-v4
+      candidates:
+        - id: text-embedding-v4
+          provider: bailian
+          model: text-embedding-v4
+          priority: 100
+    rerank:
+      default-model: qwen3-vl-rerank
+      candidates:
+        - id: qwen3-vl-rerank
+          provider: bailian
+          model: qwen3-vl-rerank
+          priority: 100
+      top-n: 10
+    circuit-breaker:
+      failure-threshold: 3
+      open-duration-seconds: 60
+      half-open-max-probes: 1
+      first-token-timeout-millis: 8000
+  rag:
+    retrieval:
+      top-k: 8
+      candidate-multiplier: 3
+      enable-global-fallback: true
+      chunk-max-tokens: 1200
+  memory:
+    recent-window-size: 12
+    summary-trigger-threshold: 20
+    summary-max-tokens: 1200
+    redis-cache-ttl-seconds: 1800
+  authz:
+    admin-role-codes:
+      - ADMIN
+    default-document-min-rank: 10
+  trace:
+    enabled: true
+    log-payload: false
+    retain-days: 30
