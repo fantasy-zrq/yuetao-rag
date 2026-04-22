@@ -1,13 +1,16 @@
 package com.rag.cn.yuetaoragbackend.controller;
 
-import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeBaseDO;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateKnowledgeBaseReq;
-import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeBaseResp;
+import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeBaseCreateResp;
+import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeBaseDetailResp;
+import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeBaseListResp;
 import com.rag.cn.yuetaoragbackend.framework.convention.Result;
 import com.rag.cn.yuetaoragbackend.framework.web.Results;
 import com.rag.cn.yuetaoragbackend.service.KnowledgeBaseService;
+
 import java.util.List;
-import org.springframework.beans.BeanUtils;
+
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -21,35 +24,23 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @RestController
 @RequestMapping("/knowledge-bases")
+@RequiredArgsConstructor
 public class KnowledgeBaseController {
 
     private final KnowledgeBaseService knowledgeBaseService;
 
-    public KnowledgeBaseController(KnowledgeBaseService knowledgeBaseService) {
-        this.knowledgeBaseService = knowledgeBaseService;
+    @PostMapping("/create")
+    public Result<KnowledgeBaseCreateResp> createKnowledgeBase(@RequestBody CreateKnowledgeBaseReq requestParam) {
+        return Results.success(knowledgeBaseService.createKnowledgeBase(requestParam));
     }
 
-    @PostMapping
-    public Result<KnowledgeBaseResp> createKnowledgeBase(@RequestBody CreateKnowledgeBaseReq requestParam) {
-        return Results.success(toKnowledgeBaseResp(knowledgeBaseService.createKnowledgeBase(requestParam)));
+    @GetMapping("/list")
+    public Result<List<KnowledgeBaseListResp>> listKnowledgeBases() {
+        return Results.success(knowledgeBaseService.listKnowledgeBases());
     }
 
-    @GetMapping
-    public Result<List<KnowledgeBaseResp>> listKnowledgeBases() {
-        return Results.success(knowledgeBaseService.listKnowledgeBases().stream().map(this::toKnowledgeBaseResp).toList());
-    }
-
-    @GetMapping("/{id}")
-    public Result<KnowledgeBaseResp> getKnowledgeBase(@PathVariable("id") Long id) {
-        return Results.success(toKnowledgeBaseResp(knowledgeBaseService.getKnowledgeBase(id)));
-    }
-
-    private KnowledgeBaseResp toKnowledgeBaseResp(KnowledgeBaseDO knowledgeBaseDO) {
-        if (knowledgeBaseDO == null) {
-            return null;
-        }
-        KnowledgeBaseResp response = new KnowledgeBaseResp();
-        BeanUtils.copyProperties(knowledgeBaseDO, response);
-        return response;
+    @GetMapping("/detail/{id}")
+    public Result<KnowledgeBaseDetailResp> getKnowledgeBase(@PathVariable("id") Long id) {
+        return Results.success(knowledgeBaseService.getKnowledgeBase(id));
     }
 }

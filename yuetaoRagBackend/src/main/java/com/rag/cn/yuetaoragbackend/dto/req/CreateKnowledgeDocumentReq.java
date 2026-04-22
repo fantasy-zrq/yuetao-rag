@@ -11,42 +11,68 @@ import lombok.experimental.Accessors;
 @Accessors(chain = true)
 public class CreateKnowledgeDocumentReq {
 
-    /** 所属知识库ID。 */
+    /**
+     * 所属知识库ID。
+     */
     private Long knowledgeBaseId;
 
-    /** 文档标题。 */
+    /**
+     * 文档标题。
+     */
     private String title;
 
-    /** 文档来源类型。 */
+    /**
+     * 文档来源类型。
+     */
     private String sourceType;
 
-    /** 文件 MIME 类型。 */
+    /**
+     * 文件 MIME 类型。
+     */
     private String mimeType;
 
-    /** RustFS bucket 名称。 */
+    /**
+     * RustFS bucket 名称。
+     */
     private String storageBucket;
 
-    /** RustFS 对象键。 */
+    /**
+     * RustFS 对象键。
+     */
     private String storageKey;
 
-    /** 对象存储 ETag。 */
+    /**
+     * 对象存储 ETag。
+     */
     private String storageEtag;
 
-    /** RustFS 文件访问 URL。 */
+    /**
+     * RustFS 文件访问 URL。
+     */
     private String storageUrl;
 
-    /** 文件大小。 */
+    /**
+     * 文件大小。
+     */
     private Long fileSize;
 
-    /** 文档解析状态。 */
+    /**
+     * 文档解析状态。
+     */
     private String parseStatus;
 
-    /** 文档可见性范围。 */
+    /**
+     * 文档可见性范围。
+     */
     private String visibilityScope;
 
-    /** 最低可访问职级。 */
+    /**
+     * 最低可访问职级。
+     */
     private Integer minRankLevel;
 
-    /** 文档状态。 */
+    /**
+     * 文档状态。
+     */
     private String status;
 }

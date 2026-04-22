@@ -3,6 +3,9 @@ package com.rag.cn.yuetaoragbackend.service;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeBaseDO;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateKnowledgeBaseReq;
+import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeBaseCreateResp;
+import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeBaseDetailResp;
+import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeBaseListResp;
 import java.util.List;
 
 /**
@@ -11,9 +14,9 @@ import java.util.List;
  */
 public interface KnowledgeBaseService extends IService<KnowledgeBaseDO> {
 
-    KnowledgeBaseDO createKnowledgeBase(CreateKnowledgeBaseReq requestParam);
+    KnowledgeBaseCreateResp createKnowledgeBase(CreateKnowledgeBaseReq requestParam);
 
-    List<KnowledgeBaseDO> listKnowledgeBases();
+    List<KnowledgeBaseListResp> listKnowledgeBases();
 
-    KnowledgeBaseDO getKnowledgeBase(Long id);
+    KnowledgeBaseDetailResp getKnowledgeBase(Long id);
 }

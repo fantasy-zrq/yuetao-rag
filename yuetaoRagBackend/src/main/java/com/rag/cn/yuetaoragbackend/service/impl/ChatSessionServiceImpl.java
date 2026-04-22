@@ -1,11 +1,21 @@
 package com.rag.cn.yuetaoragbackend.service.impl;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.rag.cn.yuetaoragbackend.config.enums.ChatSessionStatusEnum;
+import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatSessionDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChatSessionMapper;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatSessionReq;
+import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionCreateResp;
+import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionDetailResp;
+import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionListResp;
 import com.rag.cn.yuetaoragbackend.service.ChatSessionService;
+
 import java.util.List;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 
 /**
@@ -13,34 +23,48 @@ import org.springframework.stereotype.Service;
  * 2026/04/22 15:10
  */
 @Service
+@RequiredArgsConstructor
 public class ChatSessionServiceImpl extends ServiceImpl<ChatSessionMapper, ChatSessionDO>
-    implements ChatSessionService {
+        implements ChatSessionService {
+
+    private final ChatSessionMapper chatSessionMapper;
 
     @Override
-    public ChatSessionDO createChatSession(CreateChatSessionReq requestParam) {
+    public ChatSessionCreateResp createChatSession(CreateChatSessionReq requestParam) {
         ChatSessionDO sessionDO = new ChatSessionDO()
-            .setUserId(requestParam.getUserId())
-            .setTitle(requestParam.getTitle())
-            .setStatus(defaultIfBlank(requestParam.getStatus(), "ACTIVE"));
-        save(sessionDO);
-        return sessionDO;
+                .setUserId(requestParam.getUserId())
+                .setTitle(requestParam.getTitle())
+                .setStatus(requestParam.getStatus() == null || requestParam.getStatus().isBlank()
+                        ? ChatSessionStatusEnum.ACTIVE.getCode() : requestParam.getStatus());
+        chatSessionMapper.insert(sessionDO);
+        ChatSessionCreateResp response = new ChatSessionCreateResp();
+        BeanUtils.copyProperties(sessionDO, response);
+        return response;
     }
 
     @Override
-    public List<ChatSessionDO> listByUserId(Long userId) {
-        return lambdaQuery()
-            .eq(ChatSessionDO::getDeleteFlag, 0)
-            .eq(ChatSessionDO::getUserId, userId)
-            .orderByDesc(ChatSessionDO::getLastActiveAt)
-            .list();
+    public List<ChatSessionListResp> listByUserId(Long userId) {
+        return chatSessionMapper.selectList(Wrappers.<ChatSessionDO>lambdaQuery()
+                        .eq(ChatSessionDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())
+                        .eq(ChatSessionDO::getUserId, userId)
+                        .orderByDesc(ChatSessionDO::getLastActiveAt))
+                .stream()
+                .map(each -> {
+                    ChatSessionListResp response = new ChatSessionListResp();
+                    BeanUtils.copyProperties(each, response);
+                    return response;
+                })
+                .toList();
     }
 
     @Override
-    public ChatSessionDO getChatSession(Long id) {
-        return getById(id);
-    }
-
-    private String defaultIfBlank(String actual, String defaultValue) {
-        return actual == null || actual.isBlank() ? defaultValue : actual;
+    public ChatSessionDetailResp getChatSession(Long id) {
+        ChatSessionDO sessionDO = chatSessionMapper.selectById(id);
+        if (sessionDO == null) {
+            return null;
+        }
+        ChatSessionDetailResp response = new ChatSessionDetailResp();
+        BeanUtils.copyProperties(sessionDO, response);
+        return response;
     }
 }

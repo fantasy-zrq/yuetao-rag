@@ -1,5 +1,7 @@
 server:
   port: 9596
+  servlet:
+    context-path: /yuetaoRag
 
 spring:
   application:

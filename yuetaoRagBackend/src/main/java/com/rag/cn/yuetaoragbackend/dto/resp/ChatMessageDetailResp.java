@@ -6,11 +6,11 @@ import lombok.experimental.Accessors;
 
 /**
  * @author zrq
- * 2026/04/22 15:05
+ * 2026/04/22 16:00
  */
 @Data
 @Accessors(chain = true)
-public class ChatMessageResp {
+public class ChatMessageDetailResp {
 
     /** 消息ID。 */
     private Long id;
