@@ -11,18 +11,28 @@ import lombok.experimental.Accessors;
 @Accessors(chain = true)
 public class KnowledgeBaseCreateResp {
 
-    /** 知识库ID。 */
+    /**
+     * 知识库ID。
+     */
     private Long id;
 
-    /** 知识库名称。 */
+    /**
+     * 知识库名称。
+     */
     private String name;
 
-    /** 知识库状态。 */
+    /**
+     * 知识库状态。
+     */
     private String status;
 
-    /** 默认向量模型名称。 */
+    /**
+     * 默认向量模型名称。
+     */
     private String embeddingModel;
 
-    /** RustFS bucket 名称。 */
+    /**
+     * RustFS bucket 名称。
+     */
     private String collectionName;
 }

@@ -23,6 +23,12 @@ public class KnowledgeDocumentCreateResp {
     /** 文档解析状态。 */
     private String parseStatus;
 
+    /** 分块模式。 */
+    private String chunkMode;
+
+    /** 分块配置 JSON。 */
+    private String chunkConfig;
+
     /** 文档状态。 */
     private String status;
 

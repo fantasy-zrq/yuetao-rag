@@ -45,6 +45,8 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
                 .setFileSize(requestParam.getFileSize())
                 .setParseStatus(requestParam.getParseStatus() == null || requestParam.getParseStatus().isBlank()
                         ? ParseStatusEnum.PENDING.getCode() : requestParam.getParseStatus())
+                .setChunkMode(requestParam.getChunkMode())
+                .setChunkConfig(requestParam.getChunkConfig())
                 .setVisibilityScope(requestParam.getVisibilityScope() == null || requestParam.getVisibilityScope().isBlank()
                         ? VisibilityScopeEnum.INTERNAL.getCode() : requestParam.getVisibilityScope())
                 .setMinRankLevel(requestParam.getMinRankLevel() == null ? 10 : requestParam.getMinRankLevel())

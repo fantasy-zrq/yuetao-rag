@@ -45,6 +45,12 @@ public class KnowledgeDocumentDetailResp {
     /** 文档解析状态。 */
     private String parseStatus;
 
+    /** 分块模式。 */
+    private String chunkMode;
+
+    /** 分块配置 JSON。 */
+    private String chunkConfig;
+
     /** 文档可见性范围。 */
     private String visibilityScope;
 

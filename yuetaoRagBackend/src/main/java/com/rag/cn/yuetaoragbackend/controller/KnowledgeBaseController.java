@@ -1,6 +1,8 @@
 package com.rag.cn.yuetaoragbackend.controller;
 
 import com.rag.cn.yuetaoragbackend.dto.req.CreateKnowledgeBaseReq;
+import com.rag.cn.yuetaoragbackend.dto.req.DeleteKnowledgeBaseReq;
+import com.rag.cn.yuetaoragbackend.dto.req.UpdateKnowledgeBaseReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeBaseCreateResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeBaseDetailResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeBaseListResp;
@@ -32,6 +34,17 @@ public class KnowledgeBaseController {
     @PostMapping("/create")
     public Result<KnowledgeBaseCreateResp> createKnowledgeBase(@RequestBody CreateKnowledgeBaseReq requestParam) {
         return Results.success(knowledgeBaseService.createKnowledgeBase(requestParam));
+    }
+
+    @PostMapping("/update")
+    public Result<KnowledgeBaseDetailResp> updateKnowledgeBase(@RequestBody UpdateKnowledgeBaseReq requestParam) {
+        return Results.success(knowledgeBaseService.updateKnowledgeBase(requestParam));
+    }
+
+    @PostMapping("/delete")
+    public Result<Void> deleteKnowledgeBase(@RequestBody DeleteKnowledgeBaseReq requestParam) {
+        knowledgeBaseService.deleteKnowledgeBase(requestParam);
+        return Results.success();
     }
 
     @GetMapping("/list")
