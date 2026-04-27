@@ -1,5 +1,6 @@
 package com.rag.cn.yuetaoragbackend.service.impl;
 
+import cn.hutool.crypto.digest.DigestUtil;
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
@@ -11,16 +12,23 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import com.rag.cn.yuetaoragbackend.service.file.FileService;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.reader.tika.TikaDocumentReader;
 import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
 import org.springframework.core.io.ByteArrayResource;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 /**
  * @author zrq
@@ -28,16 +36,19 @@ import org.springframework.transaction.annotation.Transactional;
  */
 @Service
 @RequiredArgsConstructor
-public class KnowledgeDocumentSplitExecutionService {
+public class KnowledgeDocumentSplitServiceImpl {
 
     public static final String SPLIT_TOPIC = "yuetao-rag-chunk_topic";
 
     public static final String SPLIT_CONSUMER_GROUP = "yuetao-rag-chunk-consumer_group";
 
+    private static final int CHUNK_BATCH_SIZE = 15;
+
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
     private final ChunkMapper chunkMapper;
     private final FileService fileService;
     private final PgVectorStore chunkVectorStore;
+    private final JdbcTemplate jdbcTemplate;
 
     @Transactional(rollbackFor = Exception.class)
     public void processSplit(Long documentId) {
@@ -55,6 +66,7 @@ public class KnowledgeDocumentSplitExecutionService {
         }
 
         List<Document> vectorDocuments = new ArrayList<>();
+        List<ChunkDO> chunkEntities = new ArrayList<>();
         for (int i = 0; i < chunkTexts.size(); i++) {
             String chunkText = chunkTexts.get(i);
             long chunkId = IdWorker.getId();
@@ -62,7 +74,7 @@ public class KnowledgeDocumentSplitExecutionService {
                     .setKnowledgeBaseId(documentDO.getKnowledgeBaseId())
                     .setDocumentId(documentId)
                     .setChunkNo(i)
-                    .setChunkHash(cn.hutool.crypto.digest.DigestUtil.sha256Hex(chunkText))
+                    .setChunkHash(DigestUtil.sha256Hex(chunkText))
                     .setOriginalContent(chunkText)
                     .setEffectiveContent(chunkText)
                     .setTokenCount(chunkText.length())
@@ -72,7 +84,7 @@ public class KnowledgeDocumentSplitExecutionService {
                     .setCreatedBy(documentDO.getUpdatedBy())
                     .setUpdatedBy(documentDO.getUpdatedBy());
             chunkDO.setId(chunkId);
-            chunkMapper.insert(chunkDO);
+            chunkEntities.add(chunkDO);
 
             vectorDocuments.add(Document.builder()
                     .id(String.valueOf(chunkId))
@@ -84,6 +96,7 @@ public class KnowledgeDocumentSplitExecutionService {
                     .build());
         }
 
+        batchInsertChunks(chunkEntities);
         chunkVectorStore.add(vectorDocuments);
         KnowledgeDocumentDO successDO = new KnowledgeDocumentDO();
         successDO.setId(documentId);
@@ -104,8 +117,8 @@ public class KnowledgeDocumentSplitExecutionService {
         List<Document> documents = new TikaDocumentReader(new NamedByteArrayResource(content, filename)).get();
         return documents.stream()
                 .map(Document::getText)
-                .filter(org.springframework.util.StringUtils::hasText)
-                .collect(java.util.stream.Collectors.joining("\n"));
+                .filter(StringUtils::hasText)
+                .collect(Collectors.joining("\n"));
     }
 
     private List<String> splitTextByMode(String text, String chunkMode, String chunkConfigJson) {
@@ -131,14 +144,14 @@ public class KnowledgeDocumentSplitExecutionService {
         }
         List<String> paragraphs = java.util.Arrays.stream(text.split("\\n\\s*\\n+"))
                 .map(String::trim)
-                .filter(org.springframework.util.StringUtils::hasText)
+                .filter(StringUtils::hasText)
                 .toList();
         if (!paragraphs.isEmpty()) {
             return flattenSegments(paragraphs, chunkSize, chunkOverlap);
         }
-        List<String> sentences = java.util.Arrays.stream(text.split("(?<=[。！？.!?])"))
+        List<String> sentences = Arrays.stream(text.split("(?<=[。！？.!?])"))
                 .map(String::trim)
-                .filter(org.springframework.util.StringUtils::hasText)
+                .filter(StringUtils::hasText)
                 .toList();
         if (!sentences.isEmpty()) {
             return flattenSegments(sentences, chunkSize, chunkOverlap);
@@ -147,8 +160,8 @@ public class KnowledgeDocumentSplitExecutionService {
     }
 
     private List<String> splitByMarkdownHeadings(String text) {
-        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("(?m)^#{1,6}\\s+.+$");
-        java.util.regex.Matcher matcher = pattern.matcher(text);
+        Pattern pattern = java.util.regex.Pattern.compile("(?m)^#{1,6}\\s+.+$");
+        Matcher matcher = pattern.matcher(text);
         List<Integer> starts = new ArrayList<>();
         while (matcher.find()) {
             starts.add(matcher.start());
@@ -161,7 +174,7 @@ public class KnowledgeDocumentSplitExecutionService {
             int start = starts.get(i);
             int end = i + 1 < starts.size() ? starts.get(i + 1) : text.length();
             String section = text.substring(start, end).trim();
-            if (org.springframework.util.StringUtils.hasText(section)) {
+            if (StringUtils.hasText(section)) {
                 sections.add(section);
             }
         }
@@ -198,7 +211,7 @@ public class KnowledgeDocumentSplitExecutionService {
     private List<String> fixedSplit(String text, int chunkSize, int chunkOverlap) {
         List<String> chunks = new ArrayList<>();
         String normalized = text == null ? "" : text.trim();
-        if (!org.springframework.util.StringUtils.hasText(normalized)) {
+        if (!StringUtils.hasText(normalized)) {
             return chunks;
         }
         int start = 0;
@@ -211,6 +224,36 @@ public class KnowledgeDocumentSplitExecutionService {
             start = Math.max(end - chunkOverlap, start + 1);
         }
         return chunks;
+    }
+
+    private void batchInsertChunks(List<ChunkDO> chunkEntities) {
+        String sql = """
+                INSERT INTO t_chunk
+                (id, knowledge_base_id, document_id, chunk_no, chunk_hash, original_content, effective_content,
+                 token_count, embedding_status, enabled, manual_edited, created_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """;
+        for (int start = 0; start < chunkEntities.size(); start += CHUNK_BATCH_SIZE) {
+            int end = Math.min(start + CHUNK_BATCH_SIZE, chunkEntities.size());
+            List<Object[]> batchArgs = chunkEntities.subList(start, end).stream()
+                    .map(each -> new Object[]{
+                            each.getId(),
+                            each.getKnowledgeBaseId(),
+                            each.getDocumentId(),
+                            each.getChunkNo(),
+                            each.getChunkHash(),
+                            each.getOriginalContent(),
+                            each.getEffectiveContent(),
+                            each.getTokenCount(),
+                            each.getEmbeddingStatus(),
+                            each.getEnabled(),
+                            each.getManualEdited(),
+                            each.getCreatedBy(),
+                            each.getUpdatedBy()
+                    })
+                    .toList();
+            jdbcTemplate.batchUpdate(sql, batchArgs);
+        }
     }
 
     private record ChunkConfig(int chunkSize, int chunkOverlap) {

@@ -291,7 +291,7 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
     private void dispatchSplit(KnowledgeDocumentDO documentDO) {
         Long currentUserId = currentUserId();
         messageQueueProducer.sendInTransaction(
-                KnowledgeDocumentSplitExecutionService.SPLIT_TOPIC,
+                KnowledgeDocumentSplitServiceImpl.SPLIT_TOPIC,
                 String.valueOf(documentDO.getId()),
                 "文档切片",
                 new KnowledgeDocumentSplitEvent(documentDO.getId()),
@@ -313,7 +313,7 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
     private void dispatchRebuildSplit(KnowledgeDocumentDO documentDO, Consumer<KnowledgeDocumentDO> updateCustomizer) {
         Long currentUserId = currentUserId();
         messageQueueProducer.sendInTransaction(
-                KnowledgeDocumentSplitExecutionService.SPLIT_TOPIC,
+                KnowledgeDocumentSplitServiceImpl.SPLIT_TOPIC,
                 String.valueOf(documentDO.getId()),
                 "文档重建切片",
                 new KnowledgeDocumentSplitEvent(documentDO.getId()),

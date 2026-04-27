@@ -9,7 +9,7 @@ import com.rag.cn.yuetaoragbackend.mq.MessageWrapper;
 import com.rag.cn.yuetaoragbackend.mq.event.KnowledgeDocumentSplitEvent;
 import com.rag.cn.yuetaoragbackend.mq.producer.DelegatingTransactionListener;
 import com.rag.cn.yuetaoragbackend.mq.producer.TransactionChecker;
-import com.rag.cn.yuetaoragbackend.service.impl.KnowledgeDocumentSplitExecutionService;
+import com.rag.cn.yuetaoragbackend.service.impl.KnowledgeDocumentSplitServiceImpl;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -27,7 +27,7 @@ public class KnowledgeDocumentSplitTransactionChecker implements TransactionChec
 
     @PostConstruct
     public void registerChecker() {
-        transactionListener.registerChecker(KnowledgeDocumentSplitExecutionService.SPLIT_TOPIC, this);
+        transactionListener.registerChecker(KnowledgeDocumentSplitServiceImpl.SPLIT_TOPIC, this);
     }
 
     @Override

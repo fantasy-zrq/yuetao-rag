@@ -6,9 +6,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
-import com.rag.cn.yuetaoragbackend.dao.entity.ChunkDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
-import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
 import com.rag.cn.yuetaoragbackend.service.file.FileService;
 import java.nio.charset.StandardCharsets;
@@ -21,19 +19,17 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * @author zrq
  * 2026/04/27 10:40
  */
 @ExtendWith(MockitoExtension.class)
-class KnowledgeDocumentSplitExecutionServiceTests {
+class KnowledgeDocumentSplitServiceImplTests {
 
     @Mock
     private KnowledgeDocumentMapper knowledgeDocumentMapper;
-
-    @Mock
-    private ChunkMapper chunkMapper;
 
     @Mock
     private FileService fileService;
@@ -41,8 +37,11 @@ class KnowledgeDocumentSplitExecutionServiceTests {
     @Mock
     private PgVectorStore chunkVectorStore;
 
+    @Mock
+    private JdbcTemplate jdbcTemplate;
+
     @InjectMocks
-    private KnowledgeDocumentSplitExecutionService splitExecutionService;
+    private KnowledgeDocumentSplitServiceImpl splitExecutionService;
 
     @Test
     void shouldSplitFixedModeByCharactersAndOverlap() {
@@ -52,11 +51,12 @@ class KnowledgeDocumentSplitExecutionServiceTests {
 
         splitExecutionService.processSplit(200L);
 
-        ArgumentCaptor<ChunkDO> chunkCaptor = ArgumentCaptor.forClass(ChunkDO.class);
-        verify(chunkMapper, org.mockito.Mockito.times(3)).insert(chunkCaptor.capture());
-        List<ChunkDO> chunks = chunkCaptor.getAllValues();
-        assertThat(chunks).extracting(ChunkDO::getOriginalContent)
-                .containsExactly("abcd", "defg", "ghij");
+        ArgumentCaptor<List<Object[]>> batchCaptor = ArgumentCaptor.forClass(List.class);
+        verify(jdbcTemplate).batchUpdate(any(String.class), batchCaptor.capture());
+        assertThat(batchCaptor.getValue()).hasSize(3);
+        assertThat((String) batchCaptor.getValue().get(0)[5]).isEqualTo("abcd");
+        assertThat((String) batchCaptor.getValue().get(1)[5]).isEqualTo("defg");
+        assertThat((String) batchCaptor.getValue().get(2)[5]).isEqualTo("ghij");
         ArgumentCaptor<List<Document>> docsCaptor = ArgumentCaptor.forClass(List.class);
         verify(chunkVectorStore).add(docsCaptor.capture());
         assertThat(docsCaptor.getValue()).hasSize(3);
@@ -72,10 +72,11 @@ class KnowledgeDocumentSplitExecutionServiceTests {
 
         splitExecutionService.processSplit(200L);
 
-        ArgumentCaptor<ChunkDO> chunkCaptor = ArgumentCaptor.forClass(ChunkDO.class);
-        verify(chunkMapper, org.mockito.Mockito.times(2)).insert(chunkCaptor.capture());
-        assertThat(chunkCaptor.getAllValues()).extracting(ChunkDO::getOriginalContent)
-                .containsExactly("# Title 1\npara one", "## Title 2\npara two");
+        ArgumentCaptor<List<Object[]>> batchCaptor = ArgumentCaptor.forClass(List.class);
+        verify(jdbcTemplate).batchUpdate(any(String.class), batchCaptor.capture());
+        assertThat(batchCaptor.getValue()).hasSize(2);
+        assertThat((String) batchCaptor.getValue().get(0)[5]).isEqualTo("# Title 1\npara one");
+        assertThat((String) batchCaptor.getValue().get(1)[5]).isEqualTo("## Title 2\npara two");
     }
 
     private KnowledgeDocumentDO document(String text, String chunkMode, String chunkConfig) {

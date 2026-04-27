@@ -4,7 +4,7 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.TypeReference;
 import com.rag.cn.yuetaoragbackend.mq.MessageWrapper;
 import com.rag.cn.yuetaoragbackend.mq.event.KnowledgeDocumentSplitEvent;
-import com.rag.cn.yuetaoragbackend.service.impl.KnowledgeDocumentSplitExecutionService;
+import com.rag.cn.yuetaoragbackend.service.impl.KnowledgeDocumentSplitServiceImpl;
 
 import java.nio.charset.StandardCharsets;
 
@@ -23,12 +23,12 @@ import org.springframework.stereotype.Component;
 @Component
 @RequiredArgsConstructor
 @RocketMQMessageListener(
-        topic = KnowledgeDocumentSplitExecutionService.SPLIT_TOPIC,
-        consumerGroup = KnowledgeDocumentSplitExecutionService.SPLIT_CONSUMER_GROUP
+        topic = KnowledgeDocumentSplitServiceImpl.SPLIT_TOPIC,
+        consumerGroup = KnowledgeDocumentSplitServiceImpl.SPLIT_CONSUMER_GROUP
 )
 public class KnowledgeDocumentSplitConsumer implements RocketMQListener<MessageExt> {
 
-    private final KnowledgeDocumentSplitExecutionService splitExecutionService;
+    private final KnowledgeDocumentSplitServiceImpl splitExecutionService;
 
     @Override
     public void onMessage(MessageExt messageExt) {
