@@ -1,6 +1,8 @@
 package com.rag.cn.yuetaoragbackend.dao.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.baomidou.mybatisplus.annotation.TableField;
+import com.rag.cn.yuetaoragbackend.framework.database.JsonStringTypeHandler;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.experimental.Accessors;
@@ -10,7 +12,7 @@ import lombok.experimental.Accessors;
  * 2026/04/22 14:40
  */
 @Data
-@TableName("t_knowledge_document")
+@TableName(value = "t_knowledge_document", autoResultMap = true)
 @Accessors(chain = true)
 @EqualsAndHashCode(callSuper = true)
 public class KnowledgeDocumentDO extends BaseDO {
@@ -49,6 +51,7 @@ public class KnowledgeDocumentDO extends BaseDO {
     private String chunkMode;
 
     /** 分块配置 JSON。 */
+    @TableField(typeHandler = JsonStringTypeHandler.class)
     private String chunkConfig;
 
     /** 文档可见性范围标签。 */

@@ -1,4 +1,4 @@
-package com.rag.cn.yuetaoragbackend.framework.mq;
+package com.rag.cn.yuetaoragbackend.mq;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;

@@ -1,6 +1,6 @@
-package com.rag.cn.yuetaoragbackend.framework.mq.producer;
+package com.rag.cn.yuetaoragbackend.mq.producer;
 
-import com.rag.cn.yuetaoragbackend.framework.mq.MessageWrapper;
+import com.rag.cn.yuetaoragbackend.mq.MessageWrapper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.annotation.RocketMQTransactionListener;
 import org.apache.rocketmq.spring.core.RocketMQLocalTransactionListener;

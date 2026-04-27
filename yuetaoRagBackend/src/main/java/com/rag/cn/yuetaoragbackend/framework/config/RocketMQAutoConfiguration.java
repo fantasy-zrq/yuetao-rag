@@ -1,8 +1,8 @@
 package com.rag.cn.yuetaoragbackend.framework.config;
 
-import com.rag.cn.yuetaoragbackend.framework.mq.producer.DelegatingTransactionListener;
-import com.rag.cn.yuetaoragbackend.framework.mq.producer.MessageQueueProducer;
-import com.rag.cn.yuetaoragbackend.framework.mq.producer.RocketMQProducerAdapter;
+import com.rag.cn.yuetaoragbackend.mq.producer.DelegatingTransactionListener;
+import com.rag.cn.yuetaoragbackend.mq.producer.MessageQueueProducer;
+import com.rag.cn.yuetaoragbackend.mq.producer.RocketMQProducerAdapter;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -12,11 +12,6 @@ import org.springframework.context.annotation.Configuration;
  */
 @Configuration
 public class RocketMQAutoConfiguration {
-
-    @Bean
-    public DelegatingTransactionListener delegatingTransactionListener() {
-        return new DelegatingTransactionListener();
-    }
 
     @Bean
     public MessageQueueProducer messageQueueProducer(RocketMQTemplate rocketMQTemplate,

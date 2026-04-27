@@ -1,6 +1,6 @@
-package com.rag.cn.yuetaoragbackend.framework.mq.producer;
+package com.rag.cn.yuetaoragbackend.mq.producer;
 
-import com.rag.cn.yuetaoragbackend.framework.mq.MessageWrapper;
+import com.rag.cn.yuetaoragbackend.mq.MessageWrapper;
 
 /**
  * 事务消息回查接口，按 topic 注册到 {@link DelegatingTransactionListener}

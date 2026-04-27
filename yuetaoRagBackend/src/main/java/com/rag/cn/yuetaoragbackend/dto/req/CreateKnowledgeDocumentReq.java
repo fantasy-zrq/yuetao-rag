@@ -17,51 +17,6 @@ public class CreateKnowledgeDocumentReq {
     private Long knowledgeBaseId;
 
     /**
-     * 文档标题。
-     */
-    private String title;
-
-    /**
-     * 文档来源类型。
-     */
-    private String sourceType;
-
-    /**
-     * 文件 MIME 类型。
-     */
-    private String mimeType;
-
-    /**
-     * RustFS bucket 名称。
-     */
-    private String storageBucket;
-
-    /**
-     * RustFS 对象键。
-     */
-    private String storageKey;
-
-    /**
-     * 对象存储 ETag。
-     */
-    private String storageEtag;
-
-    /**
-     * RustFS 文件访问 URL。
-     */
-    private String storageUrl;
-
-    /**
-     * 文件大小。
-     */
-    private Long fileSize;
-
-    /**
-     * 文档解析状态。
-     */
-    private String parseStatus;
-
-    /**
      * 分块模式。
      */
     private String chunkMode;
@@ -80,9 +35,4 @@ public class CreateKnowledgeDocumentReq {
      * 最低可访问职级。
      */
     private Integer minRankLevel;
-
-    /**
-     * 文档状态。
-     */
-    private String status;
 }

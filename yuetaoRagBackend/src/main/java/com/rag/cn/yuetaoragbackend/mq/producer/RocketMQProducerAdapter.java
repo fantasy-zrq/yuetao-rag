@@ -1,7 +1,7 @@
-package com.rag.cn.yuetaoragbackend.framework.mq.producer;
+package com.rag.cn.yuetaoragbackend.mq.producer;
 
 import cn.hutool.core.util.StrUtil;
-import com.rag.cn.yuetaoragbackend.framework.mq.MessageWrapper;
+import com.rag.cn.yuetaoragbackend.mq.MessageWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.client.producer.SendResult;

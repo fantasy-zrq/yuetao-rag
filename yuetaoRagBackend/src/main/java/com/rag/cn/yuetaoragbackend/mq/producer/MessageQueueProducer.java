@@ -1,4 +1,4 @@
-package com.rag.cn.yuetaoragbackend.framework.mq.producer;
+package com.rag.cn.yuetaoragbackend.mq.producer;
 
 import org.apache.rocketmq.client.producer.SendResult;
 
