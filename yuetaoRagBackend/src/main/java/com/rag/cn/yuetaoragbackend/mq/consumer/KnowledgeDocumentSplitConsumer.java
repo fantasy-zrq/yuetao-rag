@@ -37,14 +37,17 @@ public class KnowledgeDocumentSplitConsumer implements RocketMQListener<MessageE
                     new String(messageExt.getBody(), StandardCharsets.UTF_8),
                     new TypeReference<MessageWrapper<KnowledgeDocumentSplitEvent>>() {
                     });
-            splitExecutionService.processSplit(wrapper.getBody().getDocumentId());
+            splitExecutionService.processSplit(wrapper.getBody().getDocumentId(), wrapper.getBody().getChunkLogId());
         } catch (Exception ex) {
             try {
                 MessageWrapper<KnowledgeDocumentSplitEvent> wrapper = JSON.parseObject(
                         new String(messageExt.getBody(), StandardCharsets.UTF_8),
                         new TypeReference<MessageWrapper<KnowledgeDocumentSplitEvent>>() {
                         });
-                splitExecutionService.markSplitFailed(wrapper.getBody().getDocumentId());
+                splitExecutionService.markSplitFailed(
+                        wrapper.getBody().getDocumentId(),
+                        wrapper.getBody().getChunkLogId(),
+                        ex.getMessage());
             } catch (Exception ignored) {
                 log.error("标记文档切片失败时再次异常", ignored);
             }

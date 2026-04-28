@@ -10,11 +10,15 @@ import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
+import com.rag.cn.yuetaoragbackend.config.enums.DocumentChunkLogOperationTypeEnum;
+import com.rag.cn.yuetaoragbackend.config.enums.DocumentChunkLogStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.ParseStatusEnum;
+import com.rag.cn.yuetaoragbackend.dao.entity.DocumentChunkLogDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkVectorMapper;
+import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentChunkLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
@@ -24,6 +28,7 @@ import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentDetailResp;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
+import com.rag.cn.yuetaoragbackend.mq.event.KnowledgeDocumentSplitEvent;
 import com.rag.cn.yuetaoragbackend.mq.producer.MessageQueueProducer;
 import com.rag.cn.yuetaoragbackend.service.file.FileService;
 import org.junit.jupiter.api.AfterEach;
@@ -58,6 +63,9 @@ class KnowledgeDocumentMutationServiceImplTests {
 
     @Mock
     private ChunkDepartmentAuthMapper chunkDepartmentAuthMapper;
+
+    @Mock
+    private DocumentChunkLogMapper documentChunkLogMapper;
 
     @Mock
     private FileService fileService;
@@ -124,6 +132,24 @@ class KnowledgeDocumentMutationServiceImplTests {
         verify(chunkVectorMapper).delete(any(Wrapper.class));
         verify(chunkMapper).delete(any(Wrapper.class));
         verify(messageQueueProducer).sendInTransaction(any(), any(), any(), any(), any());
+
+        ArgumentCaptor<DocumentChunkLogDO> logCaptor = ArgumentCaptor.forClass(DocumentChunkLogDO.class);
+        verify(documentChunkLogMapper).insert(logCaptor.capture());
+        DocumentChunkLogDO insertedLog = logCaptor.getValue();
+        assertThat(insertedLog.getDocumentId()).isEqualTo(200L);
+        assertThat(insertedLog.getKnowledgeBaseId()).isEqualTo(100L);
+        assertThat(insertedLog.getOperationType()).isEqualTo(DocumentChunkLogOperationTypeEnum.REBUILD.getCode());
+        assertThat(insertedLog.getStatus()).isEqualTo(DocumentChunkLogStatusEnum.PROCESSING.getCode());
+        assertThat(insertedLog.getChunkMode()).isEqualTo("STRUCTURE_AWARE");
+        assertThat(insertedLog.getChunkConfig()).isEqualTo("{\"chunkSize\":800,\"chunkOverlap\":80}");
+        assertThat(insertedLog.getStartTime()).isNotNull();
+        assertThat(insertedLog.getCreatedBy()).isEqualTo(10001L);
+
+        ArgumentCaptor<Object> eventCaptor = ArgumentCaptor.forClass(Object.class);
+        verify(messageQueueProducer).sendInTransaction(any(), any(), any(), eventCaptor.capture(), any());
+        KnowledgeDocumentSplitEvent event = (KnowledgeDocumentSplitEvent) eventCaptor.getValue();
+        assertThat(event.getDocumentId()).isEqualTo(200L);
+        assertThat(event.getChunkLogId()).isEqualTo(insertedLog.getId());
     }
 
     @Test

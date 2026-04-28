@@ -44,7 +44,7 @@ public class KnowledgeDocumentSplitTimeoutJob {
         log.warn("发现 {} 个切片超时文档，开始兜底标记为 FAILED", timedOutDocs.size());
         for (KnowledgeDocumentDO doc : timedOutDocs) {
             try {
-                knowledgeDocumentSplitService.markSplitFailed(doc.getId());
+                knowledgeDocumentSplitService.markSplitTimeout(doc.getId());
                 log.info("文档切片超时兜底完成：documentId={}", doc.getId());
             } catch (Exception ex) {
                 log.error("文档切片超时兜底失败：documentId={}", doc.getId(), ex);

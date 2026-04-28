@@ -60,6 +60,7 @@ class KnowledgeDocumentSplitRealFlowTests {
     void tearDown() {
         UserContext.clear();
         if (documentId != null) {
+            jdbcTemplate.update("delete from t_document_chunk_log where document_id = ?", documentId);
             jdbcTemplate.update("delete from t_chunk_vector where metadata->>'document_id' = ?", String.valueOf(documentId));
             jdbcTemplate.update("delete from t_chunk_department_auth where chunk_id in (select id from t_chunk where document_id = ?)", documentId);
             jdbcTemplate.update("delete from t_chunk where document_id = ?", documentId);
@@ -171,6 +172,143 @@ class KnowledgeDocumentSplitRealFlowTests {
         System.out.println("REAL_SPLIT_CHUNK_COUNT=" + chunkCount);
         System.out.println("REAL_SPLIT_VECTOR_COUNT=" + vectorCount);
         System.out.println("REAL_SPLIT_FIRST_METADATA=" + firstMetadata);
+    }
+
+    @Test
+    void shouldRejectDuplicateSplitWhenDocumentProcessing() throws Exception {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        String suffix = Long.toString(System.nanoTime(), 36).substring(0, 8);
+        String knowledgeBaseName = "split-processing-kb-" + suffix;
+        bucketName = "sp" + suffix;
+        knowledgeBaseId = createKnowledgeBase(knowledgeBaseName, bucketName);
+        documentId = uploadTextDocument(knowledgeBaseId, "abcdefghij", "{\"chunkSize\":4,\"chunkOverlap\":1}");
+        KnowledgeDocumentDO processingUpdate = new KnowledgeDocumentDO()
+                .setParseStatus("PROCESSING");
+        processingUpdate.setId(documentId);
+        knowledgeDocumentMapper.updateById(processingUpdate);
+
+        MvcResult duplicateSplitResult = mockMvc.perform(MockMvcRequestBuilders.post("/knowledge-documents/split")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "documentId":%d
+                                }
+                                """.formatted(documentId)))
+                .andReturn();
+
+        String responseBody = duplicateSplitResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(responseBody).contains("文档处理中，禁止重复分块");
+    }
+
+    @Test
+    void shouldRebuildSuccessfullyAfterFirstSplitSuccess() throws Exception {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        String suffix = Long.toString(System.nanoTime(), 36).substring(0, 8);
+        String knowledgeBaseName = "split-rebuild-kb-" + suffix;
+        bucketName = "sp" + suffix;
+        knowledgeBaseId = createKnowledgeBase(knowledgeBaseName, bucketName);
+        documentId = uploadTextDocument(knowledgeBaseId, "abcdefghij", "{\"chunkSize\":4,\"chunkOverlap\":1}");
+
+        triggerSplit(documentId);
+        KnowledgeDocumentDO firstFinished = waitUntilFinished(documentId, Duration.ofSeconds(90));
+        assertThat(firstFinished.getParseStatus()).isEqualTo("SUCCESS");
+        assertChunkAndVectorCount(documentId, 3);
+
+        MvcResult rebuildResult = mockMvc.perform(MockMvcRequestBuilders.post("/knowledge-documents/update")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "id":%d,
+                                  "title":"manual.txt",
+                                  "chunkMode":"FIXED",
+                                  "chunkConfig":"{\\"chunkSize\\":5,\\"chunkOverlap\\":0}",
+                                  "visibilityScope":"INTERNAL",
+                                  "minRankLevel":10
+                                }
+                                """.formatted(documentId)))
+                .andReturn();
+        JsonNode rebuildJson = objectMapper.readTree(rebuildResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(rebuildJson.path("code").asText()).isEqualTo("0");
+
+        KnowledgeDocumentDO rebuildFinished = waitUntilFinished(documentId, Duration.ofSeconds(90));
+        assertThat(rebuildFinished.getParseStatus()).isEqualTo("SUCCESS");
+        assertChunkAndVectorCount(documentId, 2);
+
+        Integer successLogCount = jdbcTemplate.queryForObject(
+                "select count(*) from t_document_chunk_log where document_id = ? and status = 'SUCCESS'",
+                Integer.class,
+                documentId
+        );
+        assertThat(successLogCount).isEqualTo(2);
+    }
+
+    private Long createKnowledgeBase(String knowledgeBaseName, String bucketName) throws Exception {
+        MvcResult createKbResult = mockMvc.perform(MockMvcRequestBuilders.post("/knowledge-bases/create")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name":"%s",
+                                  "description":"split flow verification",
+                                  "embeddingModel":"text-embedding-v4",
+                                  "collectionName":"%s"
+                                }
+                                """.formatted(knowledgeBaseName, bucketName)))
+                .andReturn();
+        JsonNode createKbJson = objectMapper.readTree(createKbResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(createKbJson.path("code").asText()).isEqualTo("0");
+        return createKbJson.path("data").path("id").asLong();
+    }
+
+    private Long uploadTextDocument(Long knowledgeBaseId, String content, String chunkConfig) throws Exception {
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "manual.txt",
+                "text/plain",
+                content.getBytes(StandardCharsets.UTF_8)
+        );
+        MvcResult uploadResult = mockMvc.perform(MockMvcRequestBuilders.multipart("/knowledge-documents/create")
+                        .file(file)
+                        .param("knowledgeBaseId", String.valueOf(knowledgeBaseId))
+                        .param("chunkMode", "FIXED")
+                        .param("chunkConfig", chunkConfig)
+                        .param("visibilityScope", "INTERNAL")
+                        .param("minRankLevel", "10"))
+                .andReturn();
+        JsonNode uploadJson = objectMapper.readTree(uploadResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(uploadJson.path("code").asText()).isEqualTo("0");
+        Long createdDocumentId = uploadJson.path("data").path("id").asLong();
+        KnowledgeDocumentDO documentDO = knowledgeDocumentMapper.selectById(createdDocumentId);
+        assertThat(documentDO).isNotNull();
+        objectKey = documentDO.getStorageKey();
+        return createdDocumentId;
+    }
+
+    private void triggerSplit(Long documentId) throws Exception {
+        MvcResult splitResult = mockMvc.perform(MockMvcRequestBuilders.post("/knowledge-documents/split")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "documentId":%d
+                                }
+                                """.formatted(documentId)))
+                .andReturn();
+        JsonNode splitJson = objectMapper.readTree(splitResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(splitJson.path("code").asText()).isEqualTo("0");
+    }
+
+    private void assertChunkAndVectorCount(Long documentId, int expectedCount) {
+        Integer chunkCount = jdbcTemplate.queryForObject(
+                "select count(*) from t_chunk where document_id = ? and delete_flag = 0",
+                Integer.class,
+                documentId
+        );
+        Integer vectorCount = jdbcTemplate.queryForObject(
+                "select count(*) from t_chunk_vector where metadata->>'document_id' = ?",
+                Integer.class,
+                String.valueOf(documentId)
+        );
+        assertThat(chunkCount).isEqualTo(expectedCount);
+        assertThat(vectorCount).isEqualTo(expectedCount);
     }
 
     private KnowledgeDocumentDO waitUntilFinished(Long documentId, Duration timeout) throws InterruptedException {

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(find:*)",
+      "Bash(./mvnw -q -Dmaven.repo.local=/tmp/yuetao-m2 -DskipTests compile)",
+      "Bash(./mvnw:*)"
+    ]
+  }
+}

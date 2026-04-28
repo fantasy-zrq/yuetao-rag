@@ -6,6 +6,8 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.rag.cn.yuetaoragbackend.config.enums.CommonStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
+import com.rag.cn.yuetaoragbackend.config.enums.DocumentChunkLogOperationTypeEnum;
+import com.rag.cn.yuetaoragbackend.config.enums.DocumentChunkLogStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.ParseStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.VisibilityScopeEnum;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChunkDO;
@@ -13,10 +15,12 @@ import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeBaseDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChunkDepartmentAuthDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChunkVectorDO;
+import com.rag.cn.yuetaoragbackend.dao.entity.DocumentChunkLogDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.DocumentDepartmentAuthDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkVectorMapper;
+import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentChunkLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
@@ -46,6 +50,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
+import java.util.Date;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -64,6 +69,7 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
     private final ChunkVectorMapper chunkVectorMapper;
     private final DocumentDepartmentAuthMapper documentDepartmentAuthMapper;
     private final ChunkDepartmentAuthMapper chunkDepartmentAuthMapper;
+    private final DocumentChunkLogMapper documentChunkLogMapper;
     private final FileService fileService;
     private final MessageQueueProducer messageQueueProducer;
 
@@ -290,12 +296,20 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
      */
     private void dispatchSplit(KnowledgeDocumentDO documentDO) {
         Long currentUserId = currentUserId();
+        Long chunkLogId = IdWorker.getId();
         messageQueueProducer.sendInTransaction(
                 KnowledgeDocumentSplitServiceImpl.SPLIT_TOPIC,
                 String.valueOf(documentDO.getId()),
                 "文档切片",
-                new KnowledgeDocumentSplitEvent(documentDO.getId()),
+                new KnowledgeDocumentSplitEvent(documentDO.getId(), chunkLogId),
                 ignored -> {
+                    insertChunkLog(
+                            chunkLogId,
+                            documentDO,
+                            DocumentChunkLogOperationTypeEnum.SPLIT.getCode(),
+                            documentDO.getChunkMode(),
+                            documentDO.getChunkConfig(),
+                            currentUserId);
                     KnowledgeDocumentDO updateDO = new KnowledgeDocumentDO();
                     updateDO.setId(documentDO.getId());
                     updateDO.setParseStatus(ParseStatusEnum.PROCESSING.getCode());
@@ -312,19 +326,47 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
      */
     private void dispatchRebuildSplit(KnowledgeDocumentDO documentDO, Consumer<KnowledgeDocumentDO> updateCustomizer) {
         Long currentUserId = currentUserId();
+        Long chunkLogId = IdWorker.getId();
         messageQueueProducer.sendInTransaction(
                 KnowledgeDocumentSplitServiceImpl.SPLIT_TOPIC,
                 String.valueOf(documentDO.getId()),
                 "文档重建切片",
-                new KnowledgeDocumentSplitEvent(documentDO.getId()),
+                new KnowledgeDocumentSplitEvent(documentDO.getId(), chunkLogId),
                 ignored -> {
                     cleanupGeneratedArtifacts(documentDO.getId());
                     KnowledgeDocumentDO updateDO = new KnowledgeDocumentDO();
                     updateDO.setId(documentDO.getId());
                     updateCustomizer.accept(updateDO);
+                    insertChunkLog(
+                            chunkLogId,
+                            documentDO,
+                            DocumentChunkLogOperationTypeEnum.REBUILD.getCode(),
+                            updateDO.getChunkMode() == null ? documentDO.getChunkMode() : updateDO.getChunkMode(),
+                            updateDO.getChunkConfig() == null ? documentDO.getChunkConfig() : updateDO.getChunkConfig(),
+                            currentUserId);
                     updateDO.setParseStatus(ParseStatusEnum.PROCESSING.getCode());
                     updateDO.setUpdatedBy(currentUserId);
                     knowledgeDocumentMapper.updateById(updateDO);
                 });
+    }
+
+    private void insertChunkLog(Long chunkLogId, KnowledgeDocumentDO documentDO, String operationType,
+                                String chunkMode, String chunkConfig, Long currentUserId) {
+        DocumentChunkLogDO logDO = new DocumentChunkLogDO()
+                .setDocumentId(documentDO.getId())
+                .setKnowledgeBaseId(documentDO.getKnowledgeBaseId())
+                .setOperationType(operationType)
+                .setStatus(DocumentChunkLogStatusEnum.PROCESSING.getCode())
+                .setChunkMode(chunkMode)
+                .setChunkConfig(chunkConfig)
+                .setChunkCount(0)
+                .setSplitCostMillis(0L)
+                .setVectorCostMillis(0L)
+                .setTotalCostMillis(0L)
+                .setStartTime(new Date())
+                .setCreatedBy(currentUserId)
+                .setUpdatedBy(currentUserId);
+        logDO.setId(chunkLogId);
+        documentChunkLogMapper.insert(logDO);
     }
 }

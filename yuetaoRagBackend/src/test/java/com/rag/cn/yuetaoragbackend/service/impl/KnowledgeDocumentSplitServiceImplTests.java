@@ -2,12 +2,16 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
+import com.rag.cn.yuetaoragbackend.config.enums.ParseStatusEnum;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
+import com.rag.cn.yuetaoragbackend.service.DocumentChunkLogService;
 import com.rag.cn.yuetaoragbackend.service.file.FileService;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -32,6 +36,9 @@ class KnowledgeDocumentSplitServiceImplTests {
     private KnowledgeDocumentMapper knowledgeDocumentMapper;
 
     @Mock
+    private DocumentChunkLogService documentChunkLogService;
+
+    @Mock
     private FileService fileService;
 
     @Mock
@@ -49,7 +56,7 @@ class KnowledgeDocumentSplitServiceImplTests {
         when(knowledgeDocumentMapper.selectOne(any())).thenReturn(documentDO);
         when(fileService.getObject("kb-doc-01", "doc-key.txt")).thenReturn("abcdefghij".getBytes(StandardCharsets.UTF_8));
 
-        splitExecutionService.processSplit(200L);
+        splitExecutionService.processSplit(200L, 900L);
 
         ArgumentCaptor<List<Object[]>> batchCaptor = ArgumentCaptor.forClass(List.class);
         verify(jdbcTemplate).batchUpdate(any(String.class), batchCaptor.capture());
@@ -61,6 +68,10 @@ class KnowledgeDocumentSplitServiceImplTests {
         verify(chunkVectorStore).add(docsCaptor.capture());
         assertThat(docsCaptor.getValue()).hasSize(3);
         assertThat(docsCaptor.getValue().get(0).getMetadata().get("document_id")).isEqualTo("200");
+
+        verify(documentChunkLogService).recordSplitResult(eq(900L), eq(3), anyLong());
+        verify(documentChunkLogService).recordVectorResult(eq(900L), anyLong());
+        verify(documentChunkLogService).markSuccess(eq(900L), eq(3), anyLong(), anyLong(), anyLong());
     }
 
     @Test
@@ -70,13 +81,33 @@ class KnowledgeDocumentSplitServiceImplTests {
         when(knowledgeDocumentMapper.selectOne(any())).thenReturn(documentDO);
         when(fileService.getObject("kb-doc-01", "doc-key.txt")).thenReturn(markdown.getBytes(StandardCharsets.UTF_8));
 
-        splitExecutionService.processSplit(200L);
+        splitExecutionService.processSplit(200L, 900L);
 
         ArgumentCaptor<List<Object[]>> batchCaptor = ArgumentCaptor.forClass(List.class);
         verify(jdbcTemplate).batchUpdate(any(String.class), batchCaptor.capture());
         assertThat(batchCaptor.getValue()).hasSize(2);
         assertThat((String) batchCaptor.getValue().get(0)[5]).isEqualTo("# Title 1\npara one");
         assertThat((String) batchCaptor.getValue().get(1)[5]).isEqualTo("## Title 2\npara two");
+    }
+
+    @Test
+    void shouldMarkDocumentAndChunkLogFailedWithErrorMessage() {
+        splitExecutionService.markSplitFailed(200L, 900L, "vector service unavailable");
+
+        verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
+                document.getId().equals(200L)
+                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())));
+        verify(documentChunkLogService).markFailed(900L, "vector service unavailable");
+    }
+
+    @Test
+    void shouldMarkLatestProcessingChunkLogTimeout() {
+        splitExecutionService.markSplitTimeout(200L);
+
+        verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
+                document.getId().equals(200L)
+                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())));
+        verify(documentChunkLogService).markTimeout(200L);
     }
 
     private KnowledgeDocumentDO document(String text, String chunkMode, String chunkConfig) {

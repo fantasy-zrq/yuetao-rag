@@ -10,15 +10,8 @@ import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
+import com.rag.cn.yuetaoragbackend.service.DocumentChunkLogService;
 import com.rag.cn.yuetaoragbackend.service.file.FileService;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
-
 import lombok.RequiredArgsConstructor;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.reader.tika.TikaDocumentReader;
@@ -29,6 +22,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * @author zrq
@@ -45,13 +47,15 @@ public class KnowledgeDocumentSplitServiceImpl {
     private static final int CHUNK_BATCH_SIZE = 15;
 
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
+    private final DocumentChunkLogService documentChunkLogService;
     private final ChunkMapper chunkMapper;
     private final FileService fileService;
     private final PgVectorStore chunkVectorStore;
     private final JdbcTemplate jdbcTemplate;
 
     @Transactional(rollbackFor = Exception.class)
-    public void processSplit(Long documentId) {
+    public void processSplit(Long documentId, Long chunkLogId) {
+        long totalStartNanos = System.nanoTime();
         KnowledgeDocumentDO documentDO = knowledgeDocumentMapper.selectOne(Wrappers.<KnowledgeDocumentDO>lambdaQuery()
                 .eq(KnowledgeDocumentDO::getId, documentId)
                 .eq(KnowledgeDocumentDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
@@ -64,6 +68,8 @@ public class KnowledgeDocumentSplitServiceImpl {
         if (chunkTexts.isEmpty()) {
             throw new ClientException("切片结果为空：" + documentId);
         }
+        long splitCostMillis = elapsedMillis(totalStartNanos);
+        documentChunkLogService.recordSplitResult(chunkLogId, chunkTexts.size(), splitCostMillis);
 
         List<Document> vectorDocuments = new ArrayList<>();
         List<ChunkDO> chunkEntities = new ArrayList<>();
@@ -97,20 +103,35 @@ public class KnowledgeDocumentSplitServiceImpl {
         }
 
         batchInsertChunks(chunkEntities);
+        long vectorStartNanos = System.nanoTime();
         chunkVectorStore.add(vectorDocuments);
+        long vectorCostMillis = elapsedMillis(vectorStartNanos);
+        documentChunkLogService.recordVectorResult(chunkLogId, vectorCostMillis);
         KnowledgeDocumentDO successDO = new KnowledgeDocumentDO();
         successDO.setId(documentId);
         successDO.setParseStatus(ParseStatusEnum.SUCCESS.getCode());
         successDO.setUpdatedBy(documentDO.getUpdatedBy());
         knowledgeDocumentMapper.updateById(successDO);
+        documentChunkLogService.markSuccess(chunkLogId, chunkTexts.size(), splitCostMillis, vectorCostMillis, elapsedMillis(totalStartNanos));
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
-    public void markSplitFailed(Long documentId) {
+    public void markSplitFailed(Long documentId, Long chunkLogId, String errorMessage) {
         KnowledgeDocumentDO failedDO = new KnowledgeDocumentDO();
         failedDO.setId(documentId);
         failedDO.setParseStatus(ParseStatusEnum.FAILED.getCode());
         knowledgeDocumentMapper.updateById(failedDO);
+        documentChunkLogService.markFailed(chunkLogId, errorMessage);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+    public void markSplitTimeout(Long documentId) {
+        KnowledgeDocumentDO failedDO = new KnowledgeDocumentDO();
+        failedDO.setId(documentId);
+        failedDO.setParseStatus(ParseStatusEnum.FAILED.getCode());
+        knowledgeDocumentMapper.updateById(failedDO);
+
+        documentChunkLogService.markTimeout(documentId);
     }
 
     private String parseDocument(byte[] content, String filename) {
@@ -254,6 +275,10 @@ public class KnowledgeDocumentSplitServiceImpl {
                     .toList();
             jdbcTemplate.batchUpdate(sql, batchArgs);
         }
+    }
+
+    private long elapsedMillis(long startNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
     }
 
     private record ChunkConfig(int chunkSize, int chunkOverlap) {

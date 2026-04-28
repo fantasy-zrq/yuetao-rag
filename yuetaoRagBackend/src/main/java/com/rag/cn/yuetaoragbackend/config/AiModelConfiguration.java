@@ -2,7 +2,9 @@ package com.rag.cn.yuetaoragbackend.config;
 
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.framework.exception.ServiceException;
+
 import java.util.Objects;
+
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.ai.openai.OpenAiEmbeddingModel;
 import org.springframework.ai.openai.OpenAiEmbeddingOptions;

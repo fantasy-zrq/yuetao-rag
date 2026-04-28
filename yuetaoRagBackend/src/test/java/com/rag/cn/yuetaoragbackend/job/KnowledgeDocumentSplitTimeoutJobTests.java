@@ -43,8 +43,8 @@ class KnowledgeDocumentSplitTimeoutJobTests {
 
         timeoutJob.execute();
 
-        verify(knowledgeDocumentSplitService).markSplitFailed(100L);
-        verify(knowledgeDocumentSplitService).markSplitFailed(200L);
+        verify(knowledgeDocumentSplitService).markSplitTimeout(100L);
+        verify(knowledgeDocumentSplitService).markSplitTimeout(200L);
     }
 
     @Test
@@ -53,7 +53,7 @@ class KnowledgeDocumentSplitTimeoutJobTests {
 
         timeoutJob.execute();
 
-        verify(knowledgeDocumentSplitService, never()).markSplitFailed(any());
+        verify(knowledgeDocumentSplitService, never()).markSplitTimeout(any());
     }
 
     @Test
@@ -61,12 +61,12 @@ class KnowledgeDocumentSplitTimeoutJobTests {
         KnowledgeDocumentDO doc1 = processingDocument(100L);
         KnowledgeDocumentDO doc2 = processingDocument(200L);
         when(knowledgeDocumentMapper.selectList(any())).thenReturn(List.of(doc1, doc2));
-        doThrow(new RuntimeException("DB error")).when(knowledgeDocumentSplitService).markSplitFailed(100L);
+        doThrow(new RuntimeException("DB error")).when(knowledgeDocumentSplitService).markSplitTimeout(100L);
 
         timeoutJob.execute();
 
-        verify(knowledgeDocumentSplitService).markSplitFailed(100L);
-        verify(knowledgeDocumentSplitService).markSplitFailed(200L);
+        verify(knowledgeDocumentSplitService).markSplitTimeout(100L);
+        verify(knowledgeDocumentSplitService).markSplitTimeout(200L);
     }
 
     private KnowledgeDocumentDO processingDocument(Long id) {
