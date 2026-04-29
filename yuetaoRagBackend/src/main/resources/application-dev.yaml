@@ -113,10 +113,10 @@ app:
       enable-global-fallback: true
       chunk-max-tokens: 1200
   memory:
-    recent-window-size: 12
-    summary-trigger-threshold: 20
-    summary-max-tokens: 1200
-    redis-cache-ttl-seconds: 1800
+    recent-window-size: 30
+    summary-trigger-threshold: 40
+    summary-max-tokens: 1800
+    redis-cache-ttl-seconds: 2000
   authz:
     admin-role-codes:
       - ADMIN

@@ -1,6 +1,8 @@
 package com.rag.cn.yuetaoragbackend.controller;
 
+import com.rag.cn.yuetaoragbackend.dto.req.ChatReq;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
+import com.rag.cn.yuetaoragbackend.dto.resp.ChatResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatMessageCreateResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatMessageDetailResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatMessageListResp;
@@ -27,6 +29,11 @@ import org.springframework.web.bind.annotation.RestController;
 public class ChatMessageController {
 
     private final ChatMessageService chatMessageService;
+
+    @PostMapping("/chat")
+    public Result<ChatResp> chat(@RequestBody ChatReq requestParam) {
+        return Results.success(chatMessageService.chat(requestParam));
+    }
 
     @PostMapping("/create")
     public Result<ChatMessageCreateResp> createChatMessage(@RequestBody CreateChatMessageReq requestParam) {
