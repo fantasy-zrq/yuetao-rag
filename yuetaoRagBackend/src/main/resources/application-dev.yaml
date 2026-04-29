@@ -65,12 +65,13 @@ app:
           chat: /v1/chat/completions
     chat:
       default-model: qwen-plus
-      deep-thinking-model: glm-4.7
+      deep-thinking-model: qwen-plus
       candidates:
         - id: qwen-plus
           provider: bailian
           enabled: true
           model: qwen-plus
+          supports-thinking: true
           streaming-enabled: true
           priority: 100
         - id: deepseek-v3.2

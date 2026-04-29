@@ -2,14 +2,15 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.rag.cn.yuetaoragbackend.config.RoutingChatModel;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
+import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
 import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
 import com.rag.cn.yuetaoragbackend.framework.exception.ServiceException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
@@ -22,7 +23,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -38,7 +38,7 @@ public class ChatModelGateway {
     private static final Pattern JSON_BLOCK_PATTERN = Pattern.compile("\\{.*}", Pattern.DOTALL);
 
     private final AiProperties aiProperties;
-    private final ChatModel chatModel;
+    private final RoutingChatModel chatModel;
     private final ObjectMapper objectMapper;
     private final ResourceLoader resourceLoader;
 
@@ -73,9 +73,9 @@ public class ChatModelGateway {
         return chatCompletion("", List.of(userMessage(prompt)));
     }
 
-    public ModelInfo currentModelInfo() {
-        AiProperties.ChatCandidateProperties candidate = resolveChatCandidate();
-        return new ModelInfo(candidate.getProvider(), candidate.getModel());
+    public ChatModelInfoRecord currentModelInfo() {
+        var current = chatModel.currentModelInfo();
+        return new ChatModelInfoRecord(current.provider(), current.modelName());
     }
 
     private String chatCompletion(String systemPrompt, List<Map<String, String>> messages) {
@@ -88,14 +88,6 @@ public class ChatModelGateway {
             throw new ServiceException("聊天模型返回为空");
         }
         return response.getResult().getOutput().getText();
-    }
-
-    private AiProperties.ChatCandidateProperties resolveChatCandidate() {
-        return aiProperties.getChat().getCandidates().stream()
-                .filter(each -> Boolean.TRUE.equals(each.getEnabled()))
-                .filter(each -> Objects.equals(each.getId(), aiProperties.getChat().getDefaultModel()))
-                .findFirst()
-                .orElseThrow(() -> new ServiceException("未找到默认聊天模型配置：" + aiProperties.getChat().getDefaultModel()));
     }
 
     private String renderHistory(List<String> recentMessages) {
@@ -208,8 +200,5 @@ public class ChatModelGateway {
 
     private Map<String, String> userMessage(String content) {
         return Map.of("role", "user", "content", content);
-    }
-
-    public record ModelInfo(String provider, String modelName) {
     }
 }

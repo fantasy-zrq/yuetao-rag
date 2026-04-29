@@ -1,31 +1,26 @@
 package com.rag.cn.yuetaoragbackend.service.impl;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.rag.cn.yuetaoragbackend.config.OpenAiCompatibleRerankModel;
+import com.rag.cn.yuetaoragbackend.config.record.RerankResultRecord;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.AuthzProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.RagRetrievalProperties;
 import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
-import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
-import com.rag.cn.yuetaoragbackend.framework.exception.RemoteException;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Objects;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
-import org.springframework.web.client.RestClient;
 
 /**
  * @author zrq
  * 2026/04/29 15:40
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class RagRetrievalService {
@@ -35,7 +30,7 @@ public class RagRetrievalService {
     private final RagRetrievalProperties retrievalProperties;
     private final AiProperties aiProperties;
     private final AuthzProperties authzProperties;
-    private final ObjectMapper objectMapper;
+    private final OpenAiCompatibleRerankModel rerankModel;
 
     public List<RetrievedChunk> retrieve(UserDO user, String query) {
         float[] queryVector = embeddingModel.embed(query);
@@ -88,66 +83,34 @@ public class RagRetrievalService {
         if (recalled.isEmpty()) {
             return List.of();
         }
-        AiProperties.RerankCandidateProperties candidate = resolveRerankCandidate();
-        AiProperties.ProviderProperties provider = aiProperties.getProviders().get(candidate.getProvider());
-        if (provider == null) {
-            throw new RemoteException("未找到重排序模型提供商配置：" + candidate.getProvider(), BaseErrorCode.REMOTE_ERROR);
-        }
-        if (!StringUtils.hasText(provider.getEndpoints().getRerank())) {
-            throw new RemoteException("未配置重排序接口路径：" + candidate.getProvider(), BaseErrorCode.REMOTE_ERROR);
-        }
-
         int rerankLimit = Math.min(
                 Math.max(1, safeInt(aiProperties.getRerank().getTopN(), safeInt(retrievalProperties.getTopK(), 8))),
                 recalled.size());
-        List<String> documents = recalled.stream()
-                .map(RetrievedChunk::effectiveContent)
-                .toList();
-
-        LinkedHashMap<String, Object> input = new LinkedHashMap<>();
-        input.put("query", query);
-        input.put("documents", documents);
-
-        LinkedHashMap<String, Object> parameters = new LinkedHashMap<>();
-        parameters.put("top_n", rerankLimit);
-        parameters.put("return_documents", Boolean.TRUE);
-
-        LinkedHashMap<String, Object> requestBody = new LinkedHashMap<>();
-        requestBody.put("model", candidate.getModel());
-        requestBody.put("input", input);
-        requestBody.put("parameters", parameters);
-
-        RestClient restClient = RestClient.builder()
-                .baseUrl(provider.getUrl())
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + provider.getApiKey())
-                .build();
-        JsonNode root = restClient.post()
-                .uri(provider.getEndpoints().getRerank())
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(requestBody)
-                .retrieve()
-                .body(JsonNode.class);
-        if (root == null) {
-            throw new RemoteException("重排序模型返回为空", BaseErrorCode.REMOTE_ERROR);
-        }
-        JsonNode resultsNode = root.path("output").path("results");
-        if (!resultsNode.isArray() || resultsNode.size() == 0) {
-            return List.of();
-        }
-
-        List<RetrievedChunk> reranked = new ArrayList<>();
-        for (JsonNode each : resultsNode) {
-            int index = each.path("index").asInt(-1);
-            if (index < 0 || index >= recalled.size()) {
-                continue;
+        List<String> documents = recalled.stream().map(RetrievedChunk::effectiveContent).toList();
+        try {
+            List<RerankResultRecord> rerankResults = rerankModel.rerank(query, documents, rerankLimit);
+            if (rerankResults.isEmpty()) {
+                return List.of();
             }
-            RetrievedChunk original = recalled.get(index);
-            double score = each.path("relevance_score").asDouble(0D);
-            reranked.add(original.withScores(score, score));
+            List<RetrievedChunk> reranked = new ArrayList<>();
+            for (RerankResultRecord each : rerankResults) {
+                int index = each.index();
+                if (index < 0 || index >= recalled.size()) {
+                    continue;
+                }
+                RetrievedChunk original = recalled.get(index);
+                reranked.add(original.withScores(each.score(), each.score()));
+            }
+            return reranked.stream()
+                    .sorted(Comparator.comparing(RetrievedChunk::finalScore).reversed())
+                    .toList();
+        } catch (RuntimeException ex) {
+            log.warn("重排序模型不可用，降级为直接使用召回结果", ex);
+            return recalled.stream()
+                    .limit(rerankLimit)
+                    .map(each -> each.withScores(each.vectorScore(), each.vectorScore()))
+                    .toList();
         }
-        return reranked.stream()
-                .sorted(Comparator.comparing(RetrievedChunk::finalScore).reversed())
-                .toList();
     }
 
     private boolean isAdmin(UserDO user) {
@@ -165,14 +128,6 @@ public class RagRetrievalService {
             values.add(Float.toString(each));
         }
         return "[" + String.join(",", values) + "]";
-    }
-
-    private AiProperties.RerankCandidateProperties resolveRerankCandidate() {
-        return aiProperties.getRerank().getCandidates().stream()
-                .filter(each -> Objects.equals(each.getId(), aiProperties.getRerank().getDefaultModel()))
-                .findFirst()
-                .orElseThrow(() -> new RemoteException("未找到默认重排序模型配置：" + aiProperties.getRerank().getDefaultModel(),
-                        BaseErrorCode.REMOTE_ERROR));
     }
 
     private int safeInt(Integer value, int defaultValue) {

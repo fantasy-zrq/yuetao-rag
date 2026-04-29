@@ -100,6 +100,7 @@ The project does **not** use Spring AI's auto-configured model starters. Instead
 - **Logical deletion**: most entities use `deleteFlag` field
 - **MQ serialization**: `KnowledgeDocumentSplitConsumer` uses FastJson2 (not global ObjectMapper)
 - **Test naming**: classes end with `*Tests`; mirror production package structure
+- **Refactoring rule**: prefer direct, readable code; do not split logic into extra helpers, wrappers, or modules unless the split adds real business meaning or removes meaningful complexity. Avoid abstractions created only for reuse when they make the code harder to read.
 
 ### Server
 

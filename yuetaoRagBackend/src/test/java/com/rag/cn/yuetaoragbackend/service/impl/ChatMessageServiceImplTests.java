@@ -7,6 +7,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
 import com.rag.cn.yuetaoragbackend.config.enums.ChatSessionStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
@@ -86,7 +87,7 @@ class ChatMessageServiceImplTests {
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.generateChitchatAnswer("你好", List.of()))
                 .thenReturn("你好，请问有什么可以帮你？");
-        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelGateway.ModelInfo("bailian", "qwen-plus"));
+        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
         ChatResp response = chatMessageService.chat(new ChatReq()
                 .setSessionId(10L)
@@ -119,7 +120,7 @@ class ChatMessageServiceImplTests {
         when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(rerankedChunks);
         when(chatModelGateway.generateAnswer(any(String.class), any(String.class), any(List.class), any(List.class)))
                 .thenReturn("商品支持7天无理由退货[1]。");
-        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelGateway.ModelInfo("bailian", "qwen-plus"));
+        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
         ChatResp response = chatMessageService.chat(new ChatReq()
                 .setSessionId(10L)
@@ -144,7 +145,7 @@ class ChatMessageServiceImplTests {
         when(chatModelGateway.rewriteQuestion("报销流程是什么", List.of())).thenReturn("报销流程");
         when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(List.of());
         when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(List.of());
-        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelGateway.ModelInfo("bailian", "qwen-plus"));
+        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
         ChatResp response = chatMessageService.chat(new ChatReq()
                 .setSessionId(10L)

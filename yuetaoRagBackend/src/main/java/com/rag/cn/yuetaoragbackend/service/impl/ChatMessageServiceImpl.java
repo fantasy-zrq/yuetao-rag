@@ -8,6 +8,7 @@ import com.rag.cn.yuetaoragbackend.config.enums.ChatSessionStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
+import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatMessageDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatSessionDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.QaTraceLogDO;
@@ -132,7 +133,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             }
         }
 
-        ChatModelGateway.ModelInfo modelInfo = chatModelGateway.currentModelInfo();
+        ChatModelInfoRecord modelInfo = chatModelGateway.currentModelInfo();
         ChatMessageDO userMessage = new ChatMessageDO()
                 .setSessionId(requestParam.getSessionId())
                 .setUserId(requestParam.getUserId())
