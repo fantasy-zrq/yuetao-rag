@@ -5,15 +5,14 @@ import com.alibaba.fastjson2.TypeReference;
 import com.rag.cn.yuetaoragbackend.mq.MessageWrapper;
 import com.rag.cn.yuetaoragbackend.mq.event.KnowledgeDocumentSplitEvent;
 import com.rag.cn.yuetaoragbackend.service.impl.KnowledgeDocumentSplitServiceImpl;
-
-import java.nio.charset.StandardCharsets;
-
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.common.message.MessageExt;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
 import org.apache.rocketmq.spring.core.RocketMQListener;
 import org.springframework.stereotype.Component;
+
+import java.nio.charset.StandardCharsets;
 
 /**
  * @author zrq
@@ -37,6 +36,7 @@ public class KnowledgeDocumentSplitConsumer implements RocketMQListener<MessageE
                     new String(messageExt.getBody(), StandardCharsets.UTF_8),
                     new TypeReference<MessageWrapper<KnowledgeDocumentSplitEvent>>() {
                     });
+            // 处理文档切片，这里执行的是一个大事务，并且内部的事务都是单独的
             splitExecutionService.processSplit(wrapper.getBody().getDocumentId(), wrapper.getBody().getChunkLogId());
         } catch (Exception ex) {
             try {

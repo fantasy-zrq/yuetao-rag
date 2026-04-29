@@ -13,6 +13,7 @@ import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import com.rag.cn.yuetaoragbackend.service.DocumentChunkLogService;
 import com.rag.cn.yuetaoragbackend.service.file.FileService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.reader.tika.TikaDocumentReader;
 import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
@@ -36,6 +37,7 @@ import java.util.stream.Collectors;
  * @author zrq
  * 2026/04/27 10:20
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class KnowledgeDocumentSplitServiceImpl {
@@ -69,7 +71,11 @@ public class KnowledgeDocumentSplitServiceImpl {
             throw new ClientException("切片结果为空：" + documentId);
         }
         long splitCostMillis = elapsedMillis(totalStartNanos);
-        documentChunkLogService.recordSplitResult(chunkLogId, chunkTexts.size(), splitCostMillis);
+        try {
+            documentChunkLogService.recordSplitResult(chunkLogId, chunkTexts.size(), splitCostMillis);
+        } catch (Exception ex) {
+            log.warn("文档分块日志更新失败: action=记录分块结果, documentId={}, chunkLogId={}", documentId, chunkLogId, ex);
+        }
 
         List<Document> vectorDocuments = new ArrayList<>();
         List<ChunkDO> chunkEntities = new ArrayList<>();
@@ -106,13 +112,26 @@ public class KnowledgeDocumentSplitServiceImpl {
         long vectorStartNanos = System.nanoTime();
         chunkVectorStore.add(vectorDocuments);
         long vectorCostMillis = elapsedMillis(vectorStartNanos);
-        documentChunkLogService.recordVectorResult(chunkLogId, vectorCostMillis);
+        try {
+            documentChunkLogService.recordVectorResult(chunkLogId, vectorCostMillis);
+        } catch (Exception ex) {
+            log.warn("文档分块日志更新失败: action=记录向量化结果, documentId={}, chunkLogId={}", documentId, chunkLogId, ex);
+        }
         KnowledgeDocumentDO successDO = new KnowledgeDocumentDO();
         successDO.setId(documentId);
         successDO.setParseStatus(ParseStatusEnum.SUCCESS.getCode());
         successDO.setUpdatedBy(documentDO.getUpdatedBy());
         knowledgeDocumentMapper.updateById(successDO);
-        documentChunkLogService.markSuccess(chunkLogId, chunkTexts.size(), splitCostMillis, vectorCostMillis, elapsedMillis(totalStartNanos));
+        try {
+            documentChunkLogService.markSuccess(
+                    chunkLogId,
+                    chunkTexts.size(),
+                    splitCostMillis,
+                    vectorCostMillis,
+                    elapsedMillis(totalStartNanos));
+        } catch (Exception ex) {
+            log.warn("文档分块日志更新失败: action=标记分块成功, documentId={}, chunkLogId={}", documentId, chunkLogId, ex);
+        }
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
@@ -121,7 +140,11 @@ public class KnowledgeDocumentSplitServiceImpl {
         failedDO.setId(documentId);
         failedDO.setParseStatus(ParseStatusEnum.FAILED.getCode());
         knowledgeDocumentMapper.updateById(failedDO);
-        documentChunkLogService.markFailed(chunkLogId, errorMessage);
+        try {
+            documentChunkLogService.markFailed(chunkLogId, errorMessage);
+        } catch (Exception ex) {
+            log.warn("文档分块日志更新失败: action=标记分块失败, documentId={}, chunkLogId={}", documentId, chunkLogId, ex);
+        }
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
@@ -131,7 +154,11 @@ public class KnowledgeDocumentSplitServiceImpl {
         failedDO.setParseStatus(ParseStatusEnum.FAILED.getCode());
         knowledgeDocumentMapper.updateById(failedDO);
 
-        documentChunkLogService.markTimeout(documentId);
+        try {
+            documentChunkLogService.markTimeout(documentId);
+        } catch (Exception ex) {
+            log.warn("文档分块日志更新失败: action=标记分块超时, documentId={}, chunkLogId={}", documentId, null, ex);
+        }
     }
 
     private String parseDocument(byte[] content, String filename) {

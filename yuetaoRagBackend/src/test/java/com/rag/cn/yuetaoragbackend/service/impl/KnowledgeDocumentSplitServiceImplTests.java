@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -102,6 +103,48 @@ class KnowledgeDocumentSplitServiceImplTests {
 
     @Test
     void shouldMarkLatestProcessingChunkLogTimeout() {
+        splitExecutionService.markSplitTimeout(200L);
+
+        verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
+                document.getId().equals(200L)
+                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())));
+        verify(documentChunkLogService).markTimeout(200L);
+    }
+
+    @Test
+    void shouldContinueProcessSplitWhenRecordSplitResultFails() {
+        KnowledgeDocumentDO documentDO = document("abcdefghij", "FIXED", "{\"chunkSize\":4,\"chunkOverlap\":1}");
+        when(knowledgeDocumentMapper.selectOne(any())).thenReturn(documentDO);
+        when(fileService.getObject("kb-doc-01", "doc-key.txt")).thenReturn("abcdefghij".getBytes(StandardCharsets.UTF_8));
+        doThrow(new RuntimeException("log unavailable")).when(documentChunkLogService)
+                .recordSplitResult(eq(900L), eq(3), anyLong());
+
+        splitExecutionService.processSplit(200L, 900L);
+
+        verify(chunkVectorStore).add(any());
+        verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
+                document.getId().equals(200L)
+                        && ParseStatusEnum.SUCCESS.getCode().equals(document.getParseStatus())));
+        verify(documentChunkLogService).markSuccess(eq(900L), eq(3), anyLong(), anyLong(), anyLong());
+    }
+
+    @Test
+    void shouldContinueMarkSplitFailedWhenLogUpdateFails() {
+        doThrow(new RuntimeException("log unavailable")).when(documentChunkLogService)
+                .markFailed(900L, "vector service unavailable");
+
+        splitExecutionService.markSplitFailed(200L, 900L, "vector service unavailable");
+
+        verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
+                document.getId().equals(200L)
+                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())));
+        verify(documentChunkLogService).markFailed(900L, "vector service unavailable");
+    }
+
+    @Test
+    void shouldContinueMarkSplitTimeoutWhenLogUpdateFails() {
+        doThrow(new RuntimeException("log unavailable")).when(documentChunkLogService).markTimeout(200L);
+
         splitExecutionService.markSplitTimeout(200L);
 
         verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
