@@ -24,6 +24,9 @@ public class KnowledgeDocumentListResp {
     /** 文档解析状态。 */
     private String parseStatus;
 
+    /** 文档解析失败原因。 */
+    private String failReason;
+
     /** 分块模式。 */
     private String chunkMode;
 

@@ -388,8 +388,10 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
                     KnowledgeDocumentDO updateDO = new KnowledgeDocumentDO();
                     updateDO.setId(documentDO.getId());
                     updateDO.setParseStatus(ParseStatusEnum.PROCESSING.getCode());
+                    updateDO.setFailReason(null);
                     updateDO.setUpdatedBy(currentUserId);
                     knowledgeDocumentMapper.updateById(updateDO);
+                    clearDocumentFailReason(documentDO.getId());
                 });
     }
 
@@ -420,9 +422,17 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
                             updateDO.getChunkConfig() == null ? documentDO.getChunkConfig() : updateDO.getChunkConfig(),
                             currentUserId);
                     updateDO.setParseStatus(ParseStatusEnum.PROCESSING.getCode());
+                    updateDO.setFailReason(null);
                     updateDO.setUpdatedBy(currentUserId);
                     knowledgeDocumentMapper.updateById(updateDO);
+                    clearDocumentFailReason(documentDO.getId());
                 });
+    }
+
+    private void clearDocumentFailReason(Long documentId) {
+        knowledgeDocumentMapper.update(null, Wrappers.<KnowledgeDocumentDO>update()
+                .eq("id", documentId)
+                .set("fail_reason", null));
     }
 
     private void insertChunkLog(Long chunkLogId, KnowledgeDocumentDO documentDO, String operationType,

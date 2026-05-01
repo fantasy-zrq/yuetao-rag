@@ -24,6 +24,7 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
 import com.rag.cn.yuetaoragbackend.dto.req.DeleteKnowledgeDocumentReq;
+import com.rag.cn.yuetaoragbackend.dto.req.SplitKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.UpdateKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentDetailResp;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
@@ -151,6 +152,46 @@ class KnowledgeDocumentMutationServiceImplTests {
         KnowledgeDocumentSplitEvent event = (KnowledgeDocumentSplitEvent) eventCaptor.getValue();
         assertThat(event.getDocumentId()).isEqualTo(200L);
         assertThat(event.getChunkLogId()).isEqualTo(insertedLog.getId());
+    }
+
+    @Test
+    void shouldClearFailReasonWhenRetryingFailedSplit() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        KnowledgeDocumentDO existing = existingDocument(ParseStatusEnum.FAILED.getCode());
+        existing.setFailReason("vector service unavailable");
+        when(knowledgeDocumentMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+        doAnswer(invocation -> {
+            ((java.util.function.Consumer<Object>) invocation.getArgument(4)).accept(null);
+            return null;
+        }).when(messageQueueProducer).sendInTransaction(any(), any(), any(), any(), any());
+
+        knowledgeDocumentService.splitKnowledgeDocument(new SplitKnowledgeDocumentReq().setDocumentId(200L));
+
+        ArgumentCaptor<KnowledgeDocumentDO> documentCaptor = ArgumentCaptor.forClass(KnowledgeDocumentDO.class);
+        verify(knowledgeDocumentMapper).updateById(documentCaptor.capture());
+        assertThat(documentCaptor.getValue().getParseStatus()).isEqualTo(ParseStatusEnum.PROCESSING.getCode());
+        assertThat(documentCaptor.getValue().getFailReason()).isNull();
+        verify(messageQueueProducer).sendInTransaction(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void shouldClearFailReasonWhenRetryingTimedOutSplit() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        KnowledgeDocumentDO existing = existingDocument(ParseStatusEnum.FAILED.getCode());
+        existing.setFailReason("切片超时");
+        when(knowledgeDocumentMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+        doAnswer(invocation -> {
+            ((java.util.function.Consumer<Object>) invocation.getArgument(4)).accept(null);
+            return null;
+        }).when(messageQueueProducer).sendInTransaction(any(), any(), any(), any(), any());
+
+        knowledgeDocumentService.splitKnowledgeDocument(new SplitKnowledgeDocumentReq().setDocumentId(200L));
+
+        ArgumentCaptor<KnowledgeDocumentDO> documentCaptor = ArgumentCaptor.forClass(KnowledgeDocumentDO.class);
+        verify(knowledgeDocumentMapper).updateById(documentCaptor.capture());
+        assertThat(documentCaptor.getValue().getParseStatus()).isEqualTo(ParseStatusEnum.PROCESSING.getCode());
+        assertThat(documentCaptor.getValue().getFailReason()).isNull();
+        verify(messageQueueProducer).sendInTransaction(any(), any(), any(), any(), any());
     }
 
     @Test

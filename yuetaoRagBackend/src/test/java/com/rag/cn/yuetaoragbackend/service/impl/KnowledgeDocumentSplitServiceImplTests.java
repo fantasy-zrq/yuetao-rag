@@ -97,7 +97,8 @@ class KnowledgeDocumentSplitServiceImplTests {
 
         verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
                 document.getId().equals(200L)
-                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())));
+                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())
+                        && "vector service unavailable".equals(document.getFailReason())));
         verify(documentChunkLogService).markFailed(900L, "vector service unavailable");
     }
 
@@ -107,7 +108,8 @@ class KnowledgeDocumentSplitServiceImplTests {
 
         verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
                 document.getId().equals(200L)
-                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())));
+                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())
+                        && "切片超时".equals(document.getFailReason())));
         verify(documentChunkLogService).markTimeout(200L);
     }
 
@@ -124,7 +126,8 @@ class KnowledgeDocumentSplitServiceImplTests {
         verify(chunkVectorStore).add(any());
         verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
                 document.getId().equals(200L)
-                        && ParseStatusEnum.SUCCESS.getCode().equals(document.getParseStatus())));
+                        && ParseStatusEnum.SUCCESS.getCode().equals(document.getParseStatus())
+                        && document.getFailReason() == null));
         verify(documentChunkLogService).markSuccess(eq(900L), eq(3), anyLong(), anyLong(), anyLong());
     }
 
@@ -141,7 +144,8 @@ class KnowledgeDocumentSplitServiceImplTests {
         verify(chunkVectorStore).add(any());
         verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
                 document.getId().equals(200L)
-                        && ParseStatusEnum.SUCCESS.getCode().equals(document.getParseStatus())));
+                        && ParseStatusEnum.SUCCESS.getCode().equals(document.getParseStatus())
+                        && document.getFailReason() == null));
         verify(documentChunkLogService).recordVectorResult(eq(900L), anyLong());
         verify(documentChunkLogService).markSuccess(eq(900L), eq(3), anyLong(), anyLong(), anyLong());
     }
@@ -155,7 +159,8 @@ class KnowledgeDocumentSplitServiceImplTests {
 
         verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
                 document.getId().equals(200L)
-                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())));
+                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())
+                        && "vector service unavailable".equals(document.getFailReason())));
         verify(documentChunkLogService).markFailed(900L, "vector service unavailable");
     }
 
@@ -167,7 +172,8 @@ class KnowledgeDocumentSplitServiceImplTests {
 
         verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
                 document.getId().equals(200L)
-                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())));
+                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())
+                        && "切片超时".equals(document.getFailReason())));
         verify(documentChunkLogService).markTimeout(200L);
     }
 

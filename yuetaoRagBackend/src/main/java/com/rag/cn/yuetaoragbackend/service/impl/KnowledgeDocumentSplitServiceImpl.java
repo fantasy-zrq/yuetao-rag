@@ -120,8 +120,10 @@ public class KnowledgeDocumentSplitServiceImpl {
         KnowledgeDocumentDO successDO = new KnowledgeDocumentDO();
         successDO.setId(documentId);
         successDO.setParseStatus(ParseStatusEnum.SUCCESS.getCode());
+        successDO.setFailReason(null);
         successDO.setUpdatedBy(documentDO.getUpdatedBy());
         knowledgeDocumentMapper.updateById(successDO);
+        clearDocumentFailReason(documentId);
         try {
             documentChunkLogService.markSuccess(
                     chunkLogId,
@@ -139,6 +141,7 @@ public class KnowledgeDocumentSplitServiceImpl {
         KnowledgeDocumentDO failedDO = new KnowledgeDocumentDO();
         failedDO.setId(documentId);
         failedDO.setParseStatus(ParseStatusEnum.FAILED.getCode());
+        failedDO.setFailReason(errorMessage);
         knowledgeDocumentMapper.updateById(failedDO);
         try {
             documentChunkLogService.markFailed(chunkLogId, errorMessage);
@@ -152,6 +155,7 @@ public class KnowledgeDocumentSplitServiceImpl {
         KnowledgeDocumentDO failedDO = new KnowledgeDocumentDO();
         failedDO.setId(documentId);
         failedDO.setParseStatus(ParseStatusEnum.FAILED.getCode());
+        failedDO.setFailReason("切片超时");
         knowledgeDocumentMapper.updateById(failedDO);
 
         try {
@@ -159,6 +163,12 @@ public class KnowledgeDocumentSplitServiceImpl {
         } catch (Exception ex) {
             log.warn("文档分块日志更新失败: action=标记分块超时, documentId={}, chunkLogId={}", documentId, null, ex);
         }
+    }
+
+    private void clearDocumentFailReason(Long documentId) {
+        knowledgeDocumentMapper.update(null, Wrappers.<KnowledgeDocumentDO>update()
+                .eq("id", documentId)
+                .set("fail_reason", null));
     }
 
     private String parseDocument(byte[] content, String filename) {
