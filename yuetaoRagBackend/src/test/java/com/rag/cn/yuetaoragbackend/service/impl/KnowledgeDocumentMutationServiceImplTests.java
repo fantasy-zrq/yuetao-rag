@@ -13,6 +13,7 @@ import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DocumentChunkLogOperationTypeEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DocumentChunkLogStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.ParseStatusEnum;
+import com.rag.cn.yuetaoragbackend.dao.entity.DocumentDepartmentAuthDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.DocumentChunkLogDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkDepartmentAuthMapper;
@@ -180,6 +181,144 @@ class KnowledgeDocumentMutationServiceImplTests {
         ArgumentCaptor<KnowledgeDocumentDO> captor = ArgumentCaptor.forClass(KnowledgeDocumentDO.class);
         verify(knowledgeDocumentMapper).updateById(captor.capture());
         assertThat(captor.getValue().getDeleteFlag()).isEqualTo(DeleteFlagEnum.DELETED.getCode());
+    }
+
+    @Test
+    void shouldReplaceSensitiveDepartmentAuthWhenUpdatingDocument() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        KnowledgeDocumentDO existing = existingDocument(ParseStatusEnum.SUCCESS.getCode());
+        existing.setVisibilityScope("SENSITIVE");
+        UpdateKnowledgeDocumentReq request = new UpdateKnowledgeDocumentReq()
+                .setId(200L)
+                .setTitle("renamed.pdf")
+                .setChunkMode("FIXED")
+                .setChunkConfig("{\"chunkSize\":512,\"chunkOverlap\":50}")
+                .setVisibilityScope("SENSITIVE")
+                .setMinRankLevel(10)
+                .setAuthorizedDepartmentIds(java.util.List.of(21L, 22L));
+        when(knowledgeDocumentMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+        when(knowledgeDocumentMapper.updateById(any(KnowledgeDocumentDO.class))).thenReturn(1);
+
+        KnowledgeDocumentDetailResp response = knowledgeDocumentService.updateKnowledgeDocument(request);
+
+        assertThat(response.getAuthorizedDepartmentIds()).containsExactly(21L, 22L);
+        verify(documentDepartmentAuthMapper).delete(any(Wrapper.class));
+        ArgumentCaptor<DocumentDepartmentAuthDO> authCaptor = ArgumentCaptor.forClass(DocumentDepartmentAuthDO.class);
+        verify(documentDepartmentAuthMapper, org.mockito.Mockito.times(2)).insert(authCaptor.capture());
+        assertThat(authCaptor.getAllValues())
+                .extracting(DocumentDepartmentAuthDO::getDocumentId, DocumentDepartmentAuthDO::getDepartmentId)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(200L, 21L),
+                        org.assertj.core.groups.Tuple.tuple(200L, 22L));
+    }
+
+    @Test
+    void shouldRejectUnknownVisibilityScopeWhenUpdatingDocument() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        KnowledgeDocumentDO existing = existingDocument(ParseStatusEnum.SUCCESS.getCode());
+        UpdateKnowledgeDocumentReq request = new UpdateKnowledgeDocumentReq()
+                .setId(200L)
+                .setTitle("renamed.pdf")
+                .setChunkMode("FIXED")
+                .setChunkConfig("{\"chunkSize\":512,\"chunkOverlap\":50}")
+                .setVisibilityScope("PUBLIC")
+                .setMinRankLevel(10);
+        when(knowledgeDocumentMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+
+        assertThatThrownBy(() -> knowledgeDocumentService.updateKnowledgeDocument(request))
+                .isInstanceOf(ClientException.class)
+                .hasMessageContaining("visibilityScope");
+
+        verify(knowledgeDocumentMapper, never()).updateById(any(KnowledgeDocumentDO.class));
+        verify(documentDepartmentAuthMapper, never()).delete(any(Wrapper.class));
+    }
+
+    @Test
+    void shouldRejectMissingVisibilityScopeWhenUpdatingDocument() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        KnowledgeDocumentDO existing = existingDocument(ParseStatusEnum.SUCCESS.getCode());
+        UpdateKnowledgeDocumentReq request = new UpdateKnowledgeDocumentReq()
+                .setId(200L)
+                .setTitle("renamed.pdf")
+                .setChunkMode("FIXED")
+                .setChunkConfig("{\"chunkSize\":512,\"chunkOverlap\":50}")
+                .setMinRankLevel(10);
+        when(knowledgeDocumentMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+
+        assertThatThrownBy(() -> knowledgeDocumentService.updateKnowledgeDocument(request))
+                .isInstanceOf(ClientException.class)
+                .hasMessageContaining("visibilityScope");
+
+        verify(knowledgeDocumentMapper, never()).updateById(any(KnowledgeDocumentDO.class));
+        verify(documentDepartmentAuthMapper, never()).delete(any(Wrapper.class));
+    }
+
+    @Test
+    void shouldClearDepartmentAuthWhenUpdatingDocumentToInternal() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        KnowledgeDocumentDO existing = existingDocument(ParseStatusEnum.SUCCESS.getCode());
+        existing.setVisibilityScope("SENSITIVE");
+        UpdateKnowledgeDocumentReq request = new UpdateKnowledgeDocumentReq()
+                .setId(200L)
+                .setTitle("renamed.pdf")
+                .setChunkMode("FIXED")
+                .setChunkConfig("{\"chunkSize\":512,\"chunkOverlap\":50}")
+                .setVisibilityScope("INTERNAL")
+                .setMinRankLevel(10)
+                .setAuthorizedDepartmentIds(java.util.List.of(21L));
+        when(knowledgeDocumentMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+        when(knowledgeDocumentMapper.updateById(any(KnowledgeDocumentDO.class))).thenReturn(1);
+
+        KnowledgeDocumentDetailResp response = knowledgeDocumentService.updateKnowledgeDocument(request);
+
+        assertThat(response.getAuthorizedDepartmentIds()).isEmpty();
+        verify(documentDepartmentAuthMapper).delete(any(Wrapper.class));
+        verify(documentDepartmentAuthMapper, never()).insert(any(DocumentDepartmentAuthDO.class));
+    }
+
+    @Test
+    void shouldReturnEmptyDepartmentAuthForInternalDocumentDetail() {
+        KnowledgeDocumentDO existing = existingDocument(ParseStatusEnum.SUCCESS.getCode());
+        existing.setVisibilityScope("INTERNAL");
+        when(knowledgeDocumentMapper.selectById(200L)).thenReturn(existing);
+
+        KnowledgeDocumentDetailResp response = knowledgeDocumentService.getKnowledgeDocument(200L);
+
+        assertThat(response.getAuthorizedDepartmentIds()).isEmpty();
+        verify(documentDepartmentAuthMapper, never()).selectList(any(Wrapper.class));
+    }
+
+    @Test
+    void shouldReplaceSensitiveDepartmentAuthWhenChunkConfigChanges() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        KnowledgeDocumentDO existing = existingDocument(ParseStatusEnum.SUCCESS.getCode());
+        existing.setVisibilityScope("SENSITIVE");
+        UpdateKnowledgeDocumentReq request = new UpdateKnowledgeDocumentReq()
+                .setId(200L)
+                .setTitle("manual.pdf")
+                .setChunkMode("STRUCTURE_AWARE")
+                .setChunkConfig("{\"chunkSize\":800,\"chunkOverlap\":80}")
+                .setVisibilityScope("SENSITIVE")
+                .setMinRankLevel(10)
+                .setAuthorizedDepartmentIds(java.util.List.of(31L, 32L));
+        when(knowledgeDocumentMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+        when(chunkMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of());
+        doAnswer(invocation -> {
+            ((java.util.function.Consumer<Object>) invocation.getArgument(4)).accept(null);
+            return null;
+        }).when(messageQueueProducer).sendInTransaction(any(), any(), any(), any(), any());
+
+        KnowledgeDocumentDetailResp response = knowledgeDocumentService.updateKnowledgeDocument(request);
+
+        assertThat(response.getAuthorizedDepartmentIds()).containsExactly(31L, 32L);
+        verify(documentDepartmentAuthMapper).delete(any(Wrapper.class));
+        ArgumentCaptor<DocumentDepartmentAuthDO> authCaptor = ArgumentCaptor.forClass(DocumentDepartmentAuthDO.class);
+        verify(documentDepartmentAuthMapper, org.mockito.Mockito.times(2)).insert(authCaptor.capture());
+        assertThat(authCaptor.getAllValues())
+                .extracting(DocumentDepartmentAuthDO::getDocumentId, DocumentDepartmentAuthDO::getDepartmentId)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(200L, 31L),
+                        org.assertj.core.groups.Tuple.tuple(200L, 32L));
     }
 
     private KnowledgeDocumentDO existingDocument(String parseStatus) {

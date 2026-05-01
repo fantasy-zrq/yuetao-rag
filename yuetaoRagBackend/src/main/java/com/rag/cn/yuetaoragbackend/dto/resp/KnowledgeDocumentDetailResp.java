@@ -1,6 +1,7 @@
 package com.rag.cn.yuetaoragbackend.dto.resp;
 
 import java.util.Date;
+import java.util.List;
 import lombok.Data;
 import lombok.experimental.Accessors;
 
@@ -65,4 +66,7 @@ public class KnowledgeDocumentDetailResp {
 
     /** 更新时间。 */
     private Date updateTime;
+
+    /** 文档级授权部门ID列表。 */
+    private List<Long> authorizedDepartmentIds;
 }

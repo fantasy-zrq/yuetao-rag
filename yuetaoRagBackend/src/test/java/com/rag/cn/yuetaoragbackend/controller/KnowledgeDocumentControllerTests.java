@@ -14,6 +14,8 @@ import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.ParseStatusEnum;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeBaseDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
+import com.rag.cn.yuetaoragbackend.dao.entity.DocumentDepartmentAuthDO;
+import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
@@ -63,6 +65,9 @@ class KnowledgeDocumentControllerTests {
     @Autowired
     private KnowledgeDocumentMapper knowledgeDocumentMapper;
 
+    @Autowired
+    private DocumentDepartmentAuthMapper documentDepartmentAuthMapper;
+
     @MockBean
     private FileService fileService;
 
@@ -75,6 +80,8 @@ class KnowledgeDocumentControllerTests {
     @AfterEach
     void tearDown() {
         UserContext.clear();
+        knowledgeDocumentIds.forEach(each -> documentDepartmentAuthMapper.delete(com.baomidou.mybatisplus.core.toolkit.Wrappers.<DocumentDepartmentAuthDO>lambdaQuery()
+                .eq(DocumentDepartmentAuthDO::getDocumentId, each)));
         knowledgeDocumentIds.forEach(knowledgeDocumentMapper::deleteById);
         knowledgeBaseIds.forEach(knowledgeBaseMapper::deleteById);
         knowledgeDocumentIds.clear();
@@ -143,6 +150,59 @@ class KnowledgeDocumentControllerTests {
         KnowledgeDocumentDO updated = knowledgeDocumentMapper.selectById(knowledgeDocumentDO.getId());
         assertThat(updated.getTitle()).isEqualTo("renamed.pdf");
         assertThat(updated.getParseStatus()).isEqualTo(ParseStatusEnum.SUCCESS.getCode());
+    }
+
+    @Test
+    void shouldCreateSensitiveKnowledgeDocumentWithDepartmentAuthThroughController() throws Exception {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        KnowledgeBaseDO knowledgeBaseDO = persistKnowledgeBase("doc-sensitive-kb", "doc-sensitive-bucket");
+        MockMultipartFile file = new MockMultipartFile("file", "secret.pdf", "application/pdf", "hello".getBytes());
+        when(fileService.uploadObject(eq("doc-sensitive-bucket"), any(String.class), eq(file.getBytes()), eq("application/pdf")))
+                .thenReturn(new UploadObjectResult("etag-sensitive-001", "http://rustfs/doc-sensitive-bucket/secret.pdf"));
+
+        MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.multipart("/knowledge-documents/create")
+                        .file(file)
+                        .param("knowledgeBaseId", knowledgeBaseDO.getId().toString())
+                        .param("chunkMode", "FIXED")
+                        .param("chunkConfig", "{\"chunkSize\":512,\"chunkOverlap\":50}")
+                        .param("visibilityScope", "SENSITIVE")
+                        .param("minRankLevel", "10")
+                        .param("authorizedDepartmentIds", "11", "12"))
+                .andReturn();
+
+        JsonNode responseJson = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(responseJson.path("code").asText()).isEqualTo("0");
+        Long documentId = responseJson.path("data").path("id").asLong();
+        knowledgeDocumentIds.add(documentId);
+        assertThat(toLongList(responseJson.path("data").path("authorizedDepartmentIds"))).containsExactlyInAnyOrder(11L, 12L);
+        assertThat(listDocumentDepartmentIds(documentId)).containsExactlyInAnyOrder(11L, 12L);
+    }
+
+    @Test
+    void shouldUpdateSensitiveKnowledgeDocumentDepartmentAuthThroughController() throws Exception {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        KnowledgeBaseDO knowledgeBaseDO = persistKnowledgeBase("doc-sensitive-update-kb", "doc-sensitive-update-bucket");
+        KnowledgeDocumentDO knowledgeDocumentDO = persistKnowledgeDocument(knowledgeBaseDO.getId(), ParseStatusEnum.SUCCESS.getCode());
+
+        MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.post("/knowledge-documents/update")
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "id":%d,
+                                  "title":"sensitive-renamed.pdf",
+                                  "chunkMode":"FIXED",
+                                  "chunkConfig":"{\\"chunkSize\\":512,\\"chunkOverlap\\":50}",
+                                  "visibilityScope":"SENSITIVE",
+                                  "minRankLevel":10,
+                                  "authorizedDepartmentIds":[21,22]
+                                }
+                                """.formatted(knowledgeDocumentDO.getId())))
+                .andReturn();
+
+        JsonNode responseJson = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(responseJson.path("code").asText()).isEqualTo("0");
+        assertThat(toLongList(responseJson.path("data").path("authorizedDepartmentIds"))).containsExactlyInAnyOrder(21L, 22L);
+        assertThat(listDocumentDepartmentIds(knowledgeDocumentDO.getId())).containsExactlyInAnyOrder(21L, 22L);
     }
 
     @Test
@@ -280,5 +340,20 @@ class KnowledgeDocumentControllerTests {
         knowledgeDocumentMapper.insert(knowledgeDocumentDO);
         knowledgeDocumentIds.add(knowledgeDocumentDO.getId());
         return knowledgeDocumentDO;
+    }
+
+    private List<Long> listDocumentDepartmentIds(Long documentId) {
+        return documentDepartmentAuthMapper.selectList(com.baomidou.mybatisplus.core.toolkit.Wrappers.<DocumentDepartmentAuthDO>lambdaQuery()
+                        .eq(DocumentDepartmentAuthDO::getDocumentId, documentId)
+                        .eq(DocumentDepartmentAuthDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()))
+                .stream()
+                .map(DocumentDepartmentAuthDO::getDepartmentId)
+                .toList();
+    }
+
+    private List<Long> toLongList(JsonNode arrayNode) {
+        List<Long> values = new ArrayList<>();
+        arrayNode.forEach(each -> values.add(each.asLong()));
+        return values;
     }
 }

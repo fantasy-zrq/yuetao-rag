@@ -77,6 +77,10 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
     @Transactional(rollbackFor = Exception.class)
     public KnowledgeDocumentCreateResp createKnowledgeDocument(MultipartFile file, CreateKnowledgeDocumentReq requestParam) {
         validateCreateRequest(file, requestParam);
+        String visibilityScope = resolveCreateVisibilityScope(requestParam.getVisibilityScope());
+        List<Long> authorizedDepartmentIds = resolveAuthorizedDepartmentIds(
+                visibilityScope,
+                requestParam.getAuthorizedDepartmentIds());
         KnowledgeBaseDO knowledgeBaseDO = knowledgeBaseMapper.selectOne(Wrappers.<KnowledgeBaseDO>lambdaQuery()
                 .eq(KnowledgeBaseDO::getId, requestParam.getKnowledgeBaseId())
                 .eq(KnowledgeBaseDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
@@ -101,16 +105,17 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
                 .setParseStatus(ParseStatusEnum.PENDING.getCode())
                 .setChunkMode(requestParam.getChunkMode())
                 .setChunkConfig(requestParam.getChunkConfig())
-                .setVisibilityScope(requestParam.getVisibilityScope() == null || requestParam.getVisibilityScope().isBlank()
-                        ? VisibilityScopeEnum.INTERNAL.getCode() : requestParam.getVisibilityScope())
+                .setVisibilityScope(visibilityScope)
                 .setMinRankLevel(requestParam.getMinRankLevel() == null ? 10 : requestParam.getMinRankLevel())
                 .setStatus(CommonStatusEnum.ENABLED.getCode())
                 .setCreatedBy(currentUserId)
                 .setUpdatedBy(currentUserId);
         documentDO.setId(documentId);
         knowledgeDocumentMapper.insert(documentDO);
+        replaceDocumentDepartmentAuth(documentId, documentDO.getVisibilityScope(), authorizedDepartmentIds);
         KnowledgeDocumentCreateResp response = new KnowledgeDocumentCreateResp();
         BeanUtils.copyProperties(documentDO, response);
+        response.setAuthorizedDepartmentIds(authorizedDepartmentIds);
         return response;
     }
 
@@ -121,14 +126,19 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
         if (ParseStatusEnum.PROCESSING.getCode().equals(documentDO.getParseStatus())) {
             throw new ClientException("文档处理中，禁止修改分块参数");
         }
+        String visibilityScope = resolveUpdateVisibilityScope(requestParam.getVisibilityScope());
+        List<Long> authorizedDepartmentIds = resolveAuthorizedDepartmentIds(
+                visibilityScope,
+                requestParam.getAuthorizedDepartmentIds());
         boolean chunkChanged = hasChunkConfigChanged(documentDO, requestParam);
         if (chunkChanged) {
             dispatchRebuildSplit(documentDO, updateDO -> {
                 updateDO.setTitle(requestParam.getTitle());
-                updateDO.setVisibilityScope(requestParam.getVisibilityScope());
+                updateDO.setVisibilityScope(visibilityScope);
                 updateDO.setMinRankLevel(requestParam.getMinRankLevel());
                 updateDO.setChunkMode(requestParam.getChunkMode());
                 updateDO.setChunkConfig(requestParam.getChunkConfig());
+                replaceDocumentDepartmentAuth(documentDO.getId(), visibilityScope, authorizedDepartmentIds);
             });
             documentDO.setChunkMode(requestParam.getChunkMode());
             documentDO.setChunkConfig(requestParam.getChunkConfig());
@@ -137,17 +147,19 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
             KnowledgeDocumentDO updateDO = new KnowledgeDocumentDO();
             updateDO.setId(requestParam.getId());
             updateDO.setTitle(requestParam.getTitle());
-            updateDO.setVisibilityScope(requestParam.getVisibilityScope());
+            updateDO.setVisibilityScope(visibilityScope);
             updateDO.setMinRankLevel(requestParam.getMinRankLevel());
             updateDO.setUpdatedBy(currentUserId());
             knowledgeDocumentMapper.updateById(updateDO);
+            replaceDocumentDepartmentAuth(documentDO.getId(), visibilityScope, authorizedDepartmentIds);
         }
         documentDO.setTitle(requestParam.getTitle());
-        documentDO.setVisibilityScope(requestParam.getVisibilityScope());
+        documentDO.setVisibilityScope(visibilityScope);
         documentDO.setMinRankLevel(requestParam.getMinRankLevel());
         documentDO.setUpdatedBy(currentUserId());
         KnowledgeDocumentDetailResp response = new KnowledgeDocumentDetailResp();
         BeanUtils.copyProperties(documentDO, response);
+        response.setAuthorizedDepartmentIds(authorizedDepartmentIds);
         return response;
     }
 
@@ -204,7 +216,70 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
         }
         KnowledgeDocumentDetailResp response = new KnowledgeDocumentDetailResp();
         BeanUtils.copyProperties(documentDO, response);
+        response.setAuthorizedDepartmentIds(VisibilityScopeEnum.SENSITIVE.getCode().equals(documentDO.getVisibilityScope())
+                ? listDocumentDepartmentIds(id)
+                : List.of());
         return response;
+    }
+
+    private String resolveCreateVisibilityScope(String visibilityScope) {
+        if (!StringUtils.hasText(visibilityScope)) {
+            return VisibilityScopeEnum.INTERNAL.getCode();
+        }
+        return normalizeVisibilityScopeOrThrow(visibilityScope);
+    }
+
+    private String resolveUpdateVisibilityScope(String visibilityScope) {
+        if (!StringUtils.hasText(visibilityScope)) {
+            throw new ClientException("visibilityScope 不能为空");
+        }
+        return normalizeVisibilityScopeOrThrow(visibilityScope);
+    }
+
+    private String normalizeVisibilityScopeOrThrow(String visibilityScope) {
+        String normalized = visibilityScope.trim();
+        for (VisibilityScopeEnum each : VisibilityScopeEnum.values()) {
+            if (each.getCode().equals(normalized)) {
+                return normalized;
+            }
+        }
+        throw new ClientException("visibilityScope 非法：" + visibilityScope);
+    }
+
+    private List<Long> resolveAuthorizedDepartmentIds(String visibilityScope, List<Long> authorizedDepartmentIds) {
+        if (!VisibilityScopeEnum.SENSITIVE.getCode().equals(visibilityScope)) {
+            return List.of();
+        }
+        List<Long> normalizedIds = authorizedDepartmentIds == null ? List.of() : authorizedDepartmentIds.stream()
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (normalizedIds.isEmpty()) {
+            throw new ClientException("SENSITIVE 文档必须指定授权部门");
+        }
+        return normalizedIds;
+    }
+
+    private void replaceDocumentDepartmentAuth(Long documentId, String visibilityScope, List<Long> authorizedDepartmentIds) {
+        documentDepartmentAuthMapper.delete(Wrappers.<DocumentDepartmentAuthDO>lambdaQuery()
+                .eq(DocumentDepartmentAuthDO::getDocumentId, documentId));
+        if (!VisibilityScopeEnum.SENSITIVE.getCode().equals(visibilityScope)) {
+            return;
+        }
+        for (Long departmentId : authorizedDepartmentIds) {
+            documentDepartmentAuthMapper.insert(new DocumentDepartmentAuthDO()
+                    .setDocumentId(documentId)
+                    .setDepartmentId(departmentId));
+        }
+    }
+
+    private List<Long> listDocumentDepartmentIds(Long documentId) {
+        return documentDepartmentAuthMapper.selectList(Wrappers.<DocumentDepartmentAuthDO>lambdaQuery()
+                        .eq(DocumentDepartmentAuthDO::getDocumentId, documentId)
+                        .eq(DocumentDepartmentAuthDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()))
+                .stream()
+                .map(DocumentDepartmentAuthDO::getDepartmentId)
+                .toList();
     }
 
     private void validateCreateRequest(MultipartFile file, CreateKnowledgeDocumentReq requestParam) {

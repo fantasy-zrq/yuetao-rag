@@ -3,6 +3,8 @@ package com.rag.cn.yuetaoragbackend.dto.req;
 import lombok.Data;
 import lombok.experimental.Accessors;
 
+import java.util.List;
+
 /**
  * @author zrq
  * 2026/04/26 17:00
@@ -22,4 +24,6 @@ public class UpdateKnowledgeDocumentReq {
     private String visibilityScope;
 
     private Integer minRankLevel;
+
+    private List<Long> authorizedDepartmentIds;
 }

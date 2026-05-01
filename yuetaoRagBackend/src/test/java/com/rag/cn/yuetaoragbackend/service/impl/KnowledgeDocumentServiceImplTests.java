@@ -12,6 +12,8 @@ import com.rag.cn.yuetaoragbackend.config.enums.CommonStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.ParseStatusEnum;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeBaseDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
+import com.rag.cn.yuetaoragbackend.dao.entity.DocumentDepartmentAuthDO;
+import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateKnowledgeDocumentReq;
@@ -31,6 +33,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.util.List;
+
 /**
  * @author zrq
  * 2026/04/26 16:20
@@ -43,6 +47,9 @@ class KnowledgeDocumentServiceImplTests {
 
     @Mock
     private KnowledgeBaseMapper knowledgeBaseMapper;
+
+    @Mock
+    private DocumentDepartmentAuthMapper documentDepartmentAuthMapper;
 
     @Mock
     private FileService fileService;
@@ -112,5 +119,87 @@ class KnowledgeDocumentServiceImplTests {
         assertThatThrownBy(() -> knowledgeDocumentService.createKnowledgeDocument(file, request))
                 .isInstanceOf(ClientException.class)
                 .hasMessageContaining("chunkMode");
+    }
+
+    @Test
+    void shouldRejectSensitiveDocumentWithoutDepartmentAuth() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        CreateKnowledgeDocumentReq request = new CreateKnowledgeDocumentReq()
+                .setKnowledgeBaseId(100L)
+                .setChunkMode("FIXED")
+                .setChunkConfig("{\"chunkSize\":512,\"chunkOverlap\":50}")
+                .setVisibilityScope("SENSITIVE")
+                .setMinRankLevel(10);
+        MockMultipartFile file = new MockMultipartFile("file", "guide.pdf", "application/pdf", "hello".getBytes());
+
+        assertThatThrownBy(() -> knowledgeDocumentService.createKnowledgeDocument(file, request))
+                .isInstanceOf(ClientException.class)
+                .hasMessageContaining("授权部门");
+    }
+
+    @Test
+    void shouldRejectBlankSensitiveDocumentWithoutDepartmentAuthAfterTrimmingVisibilityScope() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        CreateKnowledgeDocumentReq request = new CreateKnowledgeDocumentReq()
+                .setKnowledgeBaseId(100L)
+                .setChunkMode("FIXED")
+                .setChunkConfig("{\"chunkSize\":512,\"chunkOverlap\":50}")
+                .setVisibilityScope(" SENSITIVE ")
+                .setMinRankLevel(10);
+        MockMultipartFile file = new MockMultipartFile("file", "guide.pdf", "application/pdf", "hello".getBytes());
+
+        assertThatThrownBy(() -> knowledgeDocumentService.createKnowledgeDocument(file, request))
+                .isInstanceOf(ClientException.class)
+                .hasMessageContaining("授权部门");
+    }
+
+    @Test
+    void shouldRejectUnknownVisibilityScopeWhenCreatingDocument() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        CreateKnowledgeDocumentReq request = new CreateKnowledgeDocumentReq()
+                .setKnowledgeBaseId(100L)
+                .setChunkMode("FIXED")
+                .setChunkConfig("{\"chunkSize\":512,\"chunkOverlap\":50}")
+                .setVisibilityScope("PUBLIC")
+                .setMinRankLevel(10);
+        MockMultipartFile file = new MockMultipartFile("file", "guide.pdf", "application/pdf", "hello".getBytes());
+
+        assertThatThrownBy(() -> knowledgeDocumentService.createKnowledgeDocument(file, request))
+                .isInstanceOf(ClientException.class)
+                .hasMessageContaining("visibilityScope");
+    }
+
+    @Test
+    void shouldPersistSensitiveDocumentDepartmentAuth() throws Exception {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        KnowledgeBaseDO knowledgeBaseDO = new KnowledgeBaseDO();
+        knowledgeBaseDO.setId(100L);
+        knowledgeBaseDO.setCollectionName("kb-sensitive-01");
+        knowledgeBaseDO.setEmbeddingModel("text-embedding-v4");
+        CreateKnowledgeDocumentReq request = new CreateKnowledgeDocumentReq()
+                .setKnowledgeBaseId(100L)
+                .setChunkMode("FIXED")
+                .setChunkConfig("{\"chunkSize\":512,\"chunkOverlap\":50}")
+                .setVisibilityScope("SENSITIVE")
+                .setMinRankLevel(10)
+                .setAuthorizedDepartmentIds(java.util.Arrays.asList(11L, null, 11L, 12L));
+        MockMultipartFile file = new MockMultipartFile("file", "secret.pdf", "application/pdf", "hello".getBytes());
+        when(knowledgeBaseMapper.selectOne(any(Wrapper.class))).thenReturn(knowledgeBaseDO);
+        when(fileService.uploadObject(eq("kb-sensitive-01"), any(String.class), eq(file.getBytes()), eq("application/pdf")))
+                .thenReturn(new UploadObjectResult("etag-sensitive-001", "http://rustfs/kb-sensitive-01/secret.pdf"));
+
+        KnowledgeDocumentCreateResp response = knowledgeDocumentService.createKnowledgeDocument(file, request);
+
+        assertThat(response.getAuthorizedDepartmentIds()).containsExactly(11L, 12L);
+        ArgumentCaptor<KnowledgeDocumentDO> documentCaptor = ArgumentCaptor.forClass(KnowledgeDocumentDO.class);
+        verify(knowledgeDocumentMapper).insert(documentCaptor.capture());
+        Long documentId = documentCaptor.getValue().getId();
+        ArgumentCaptor<DocumentDepartmentAuthDO> authCaptor = ArgumentCaptor.forClass(DocumentDepartmentAuthDO.class);
+        verify(documentDepartmentAuthMapper, org.mockito.Mockito.times(2)).insert(authCaptor.capture());
+        assertThat(authCaptor.getAllValues())
+                .extracting(DocumentDepartmentAuthDO::getDocumentId, DocumentDepartmentAuthDO::getDepartmentId)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple(documentId, 11L),
+                        org.assertj.core.groups.Tuple.tuple(documentId, 12L));
     }
 }

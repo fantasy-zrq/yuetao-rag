@@ -3,6 +3,8 @@ package com.rag.cn.yuetaoragbackend.dto.req;
 import lombok.Data;
 import lombok.experimental.Accessors;
 
+import java.util.List;
+
 /**
  * @author zrq
  * 2026/04/22 15:05
@@ -35,4 +37,9 @@ public class CreateKnowledgeDocumentReq {
      * 最低可访问职级。
      */
     private Integer minRankLevel;
+
+    /**
+     * 文档级授权部门ID列表，仅 SENSITIVE 文档需要。
+     */
+    private List<Long> authorizedDepartmentIds;
 }

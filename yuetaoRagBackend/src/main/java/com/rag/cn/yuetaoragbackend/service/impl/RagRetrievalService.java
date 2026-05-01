@@ -55,6 +55,15 @@ public class RagRetrievalService {
                   and kd.status = 'ENABLED'
                   and kd.parse_status = 'SUCCESS'
                   and (? = true or coalesce(kd.min_rank_level, 0) <= ?)
+                  and (? = true
+                       or kd.visibility_scope <> 'SENSITIVE'
+                       or exists (
+                           select 1
+                           from t_document_department_auth dda
+                           where dda.document_id = kd.id
+                             and dda.department_id = ?
+                             and dda.delete_flag = 0
+                       ))
                 order by cv.embedding <=> cast(? as vector)
                 limit ?
                 """;
@@ -74,6 +83,8 @@ public class RagRetrievalService {
                 vectorLiteral,
                 admin,
                 user.getRankLevel() == null ? 0 : user.getRankLevel(),
+                admin,
+                user.getDepartmentId() == null ? -1L : user.getDepartmentId(),
                 vectorLiteral,
                 recallLimit);
         return recalled;

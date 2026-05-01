@@ -3,6 +3,8 @@ package com.rag.cn.yuetaoragbackend.dto.resp;
 import lombok.Data;
 import lombok.experimental.Accessors;
 
+import java.util.List;
+
 /**
  * @author zrq
  * 2026/04/22 16:00
@@ -34,4 +36,7 @@ public class KnowledgeDocumentCreateResp {
 
     /** RustFS 访问 URL。 */
     private String storageUrl;
+
+    /** 文档级授权部门ID列表。 */
+    private List<Long> authorizedDepartmentIds;
 }
