@@ -2,6 +2,8 @@ package com.rag.cn.yuetaoragbackend.framework.config;
 
 
 import com.rag.cn.yuetaoragbackend.framework.web.GlobalExceptionHandler;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -17,5 +19,10 @@ public class WebAutoConfiguration {
     @Bean
     public GlobalExceptionHandler globalExceptionHandler() {
         return new GlobalExceptionHandler();
+    }
+
+    @Bean(destroyMethod = "shutdown")
+    public ExecutorService chatStreamExecutor() {
+        return Executors.newCachedThreadPool();
     }
 }

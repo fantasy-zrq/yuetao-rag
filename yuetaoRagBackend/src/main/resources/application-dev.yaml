@@ -107,6 +107,7 @@ app:
       open-duration-seconds: 60
       half-open-max-probes: 1
       first-token-timeout-millis: 8000
+      stream-chunk-idle-timeout-millis: 5000
   rag:
     retrieval:
       top-k: 8

@@ -281,5 +281,10 @@ public class AiProperties {
          * 流式首包超时时间，单位毫秒。
          */
         private Integer firstTokenTimeoutMillis;
+
+        /**
+         * 流式分片静默超时时间，单位毫秒。
+         */
+        private Integer streamChunkIdleTimeoutMillis;
     }
 }

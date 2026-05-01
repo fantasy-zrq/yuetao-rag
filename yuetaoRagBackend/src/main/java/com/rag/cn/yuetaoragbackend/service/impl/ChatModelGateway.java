@@ -3,6 +3,7 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rag.cn.yuetaoragbackend.config.RoutingChatModel;
+import com.rag.cn.yuetaoragbackend.config.record.ChatModelCandidateRuntimeRecord;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
 import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
@@ -11,18 +12,21 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StreamUtils;
 import org.springframework.util.StringUtils;
+import reactor.core.publisher.Flux;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -76,6 +80,48 @@ public class ChatModelGateway {
     public ChatModelInfoRecord currentModelInfo() {
         var current = chatModel.currentModelInfo();
         return new ChatModelInfoRecord(current.provider(), current.modelName());
+    }
+
+    public List<String> streamingCandidateIds() {
+        return chatModel.candidatesForStreaming().stream()
+                .map(ChatModelCandidateRuntimeRecord::id)
+                .toList();
+    }
+
+    public boolean tryAcquireStreamingCandidate(String candidateId) {
+        return candidateById(candidateId).tryAcquire(aiProperties.getCircuitBreaker());
+    }
+
+    public void markStreamingCandidateSuccess(String candidateId) {
+        chatModel.markStreamingSuccess(candidateById(candidateId));
+    }
+
+    public void markStreamingCandidateFailure(String candidateId) {
+        chatModel.markStreamingFailure(candidateById(candidateId));
+    }
+
+    public ChatModelInfoRecord candidateInfo(String candidateId) {
+        ChatModelCandidateRuntimeRecord candidate = candidateById(candidateId);
+        return new ChatModelInfoRecord(candidate.provider(), candidate.modelName());
+    }
+
+    public Flux<String> streamChitchatByCandidate(String candidateId, String question, List<String> recentMessages) {
+        String prompt = renderPrompt("prompt/answer-chat-system.st", Map.of(
+                "history", renderHistory(recentMessages),
+                "question", safeText(question),
+                "retrieved_knowledge", "无"));
+        return streamByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
+    }
+
+    public Flux<String> streamKnowledgeAnswerByCandidate(String candidateId, String originalQuestion,
+                                                         String rewrittenQuery, List<String> recentMessages,
+                                                         List<RagRetrievalService.RetrievedChunk> citations) {
+        String prompt = renderPrompt("prompt/answer-chat-kb.st", Map.of(
+                "history", renderHistory(recentMessages),
+                "question", safeText(originalQuestion),
+                "rewritten_question", safeText(rewrittenQuery),
+                "retrieved_knowledge", renderCitations(citations)));
+        return streamByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
     }
 
     private String chatCompletion(String systemPrompt, List<Map<String, String>> messages) {
@@ -200,5 +246,25 @@ public class ChatModelGateway {
 
     private Map<String, String> userMessage(String content) {
         return Map.of("role", "user", "content", content);
+    }
+
+    private Flux<String> streamByCandidate(String candidateId, Prompt prompt) {
+        return candidateById(candidateId).chatModel().stream(prompt)
+                .map(this::extractStreamText)
+                .filter(StringUtils::hasText);
+    }
+
+    private String extractStreamText(ChatResponse response) {
+        if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
+            return null;
+        }
+        return response.getResult().getOutput().getText();
+    }
+
+    private ChatModelCandidateRuntimeRecord candidateById(String candidateId) {
+        return chatModel.candidatesForStreaming().stream()
+                .filter(each -> Objects.equals(each.id(), candidateId))
+                .findFirst()
+                .orElseThrow(() -> new ServiceException("未找到流式候选：" + candidateId));
     }
 }

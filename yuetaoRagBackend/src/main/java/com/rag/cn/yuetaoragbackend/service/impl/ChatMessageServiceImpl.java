@@ -2,10 +2,12 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.rag.cn.yuetaoragbackend.config.enums.ChatMessageContentTypeEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.ChatSessionStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
+import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
@@ -18,21 +20,33 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.ChatSessionMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.QaTraceLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatReq;
+import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.*;
+import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import com.rag.cn.yuetaoragbackend.service.ChatMessageService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
 /**
@@ -41,8 +55,11 @@ import java.util.stream.IntStream;
  */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatMessageDO>
         implements ChatMessageService {
+
+    private static final long CHAT_STREAM_TIMEOUT_MILLIS = 180_000L;
 
     private final ChatMessageMapper chatMessageMapper;
     private final ChatSessionMapper chatSessionMapper;
@@ -52,6 +69,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     private final RagRetrievalService ragRetrievalService;
     private final MemoryProperties memoryProperties;
     private final TraceProperties traceProperties;
+    private final AiProperties aiProperties;
+    private final ExecutorService chatStreamExecutor;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -174,6 +193,176 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     }
 
     @Override
+    public SseEmitter chatStream(ChatStreamReq requestParam) {
+        SseEmitter emitter = new SseEmitter(CHAT_STREAM_TIMEOUT_MILLIS);
+        AtomicReference<Disposable> subscriptionRef = new AtomicReference<>();
+        AtomicBoolean closed = new AtomicBoolean(false);
+        Runnable cancelSubscription = () -> {
+            closed.set(true);
+            Disposable subscription = subscriptionRef.get();
+            if (subscription != null && !subscription.isDisposed()) {
+                subscription.dispose();
+            }
+        };
+        emitter.onCompletion(cancelSubscription);
+        emitter.onTimeout(() -> {
+            cancelSubscription.run();
+            completeEmitter(emitter);
+        });
+        emitter.onError(throwable -> cancelSubscription.run());
+        chatStreamExecutor.execute(() -> sendChatStreamEvents(requestParam, emitter, subscriptionRef, closed));
+        return emitter;
+    }
+
+    private void sendChatStreamEvents(ChatStreamReq requestParam, SseEmitter emitter,
+                                      AtomicReference<Disposable> subscriptionRef,
+                                      AtomicBoolean closed) {
+        try {
+            Disposable subscription = buildChatStreamEvents(requestParam)
+                    .subscribe(
+                            each -> {
+                                if (!closed.get()) {
+                                    sendStreamEvent(emitter, each);
+                                }
+                            },
+                            ex -> completeEmitterWithError(emitter, requestParam, ex, closed),
+                            () -> {
+                                if (closed.compareAndSet(false, true)) {
+                                    completeEmitter(emitter);
+                                }
+                            });
+            subscriptionRef.set(subscription);
+            if (closed.get() && !subscription.isDisposed()) {
+                subscription.dispose();
+            }
+        } catch (Exception ex) {
+            completeEmitterWithError(emitter, requestParam, ex, closed);
+        }
+    }
+
+    Flux<ChatStreamEventResp> buildChatStreamEvents(ChatStreamReq requestParam) {
+        try {
+            validateStreamRequest(requestParam);
+            ChatSessionDO sessionDO = requireSession(requestParam.getSessionId(), requestParam.getUserId());
+            UserDO userDO = requireUser(requestParam.getUserId());
+            String traceId = StringUtils.hasText(requestParam.getTraceId()) ? requestParam.getTraceId() : UUID.randomUUID().toString();
+            List<ChatMessageDO> recentMessages = loadRecentMessages(requestParam.getSessionId());
+            int nextSequenceNo = nextSequenceNo(recentMessages);
+            List<String> historyTexts = toHistoryTexts(recentMessages);
+
+            String intentType = chatModelGateway.classifyQuestionIntent(requestParam.getMessage(), historyTexts);
+            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "INTENT",
+                    "SUCCESS", 0L, "intent=" + intentType);
+
+            if ("CHITCHAT".equals(intentType)) {
+                persistUserMessage(requestParam, traceId, nextSequenceNo);
+                return streamByCandidates(
+                        traceId,
+                        requestParam.getSessionId(),
+                        requestParam.getUserId(),
+                        nextSequenceNo + 1,
+                        requestParam.getMessage(),
+                        List.of(),
+                        chatModelGateway.streamingCandidateIds(),
+                        (candidateId, ignored) -> chatModelGateway.streamChitchatByCandidate(candidateId, requestParam.getMessage(), historyTexts));
+            }
+
+            String rewrittenQuery = chatModelGateway.rewriteQuestion(requestParam.getMessage(), historyTexts);
+            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "REWRITE",
+                    "SUCCESS", 0L, "rewrittenQuery=" + shorten(rewrittenQuery, 240));
+            List<RagRetrievalService.RetrievedChunk> recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
+            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "RETRIEVE",
+                    "SUCCESS", 0L, "candidateCount=" + recalledChunks.size());
+            List<RagRetrievalService.RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
+            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "RERANK",
+                    "SUCCESS", 0L, "rerankCount=" + rerankedChunks.size());
+
+            if (rerankedChunks.isEmpty()) {
+                persistUserMessage(requestParam, traceId, nextSequenceNo);
+                return streamStaticAnswer(
+                        traceId,
+                        sessionDO,
+                        requestParam.getUserId(),
+                        nextSequenceNo + 1,
+                        requestParam.getMessage(),
+                        "当前知识库中没有该方面的内容，暂时无法回答这个问题。");
+            }
+
+            persistUserMessage(requestParam, traceId, nextSequenceNo);
+            return streamByCandidates(
+                    traceId,
+                    requestParam.getSessionId(),
+                    requestParam.getUserId(),
+                    nextSequenceNo + 1,
+                    requestParam.getMessage(),
+                    toStreamCitationResponses(rerankedChunks),
+                    chatModelGateway.streamingCandidateIds(),
+                    (candidateId, ignored) -> chatModelGateway.streamKnowledgeAnswerByCandidate(
+                            candidateId,
+                            requestParam.getMessage(),
+                            rewrittenQuery,
+                            historyTexts,
+                            rerankedChunks));
+        } catch (ClientException ex) {
+            return Flux.just(ChatStreamEventResp.error(requestParam == null ? null : requestParam.getTraceId(),
+                    requestParam == null ? null : requestParam.getSessionId(),
+                    BaseErrorCode.CLIENT_ERROR.code(),
+                    ex.getErrorMessage()));
+        } catch (RuntimeException ex) {
+            return Flux.just(ChatStreamEventResp.error(requestParam == null ? null : requestParam.getTraceId(),
+                    requestParam == null ? null : requestParam.getSessionId(),
+                    BaseErrorCode.SERVICE_ERROR.code(),
+                    ex.getMessage()));
+        }
+    }
+
+    private void sendStreamEvent(SseEmitter emitter, ChatStreamEventResp event) {
+        try {
+            emitter.send(SseEmitter.event()
+                    .id(event.getTraceId())
+                    .name(event.getEvent())
+                    .data(event));
+        } catch (Exception ex) {
+            throw new IllegalStateException("发送 SSE 事件失败", ex);
+        }
+    }
+
+    private void sendUnexpectedStreamError(SseEmitter emitter, ChatStreamReq requestParam, Throwable throwable) {
+        try {
+            emitter.send(SseEmitter.event()
+                    .name("error")
+                    .data(ChatStreamEventResp.error(
+                            requestParam == null ? null : requestParam.getTraceId(),
+                            requestParam == null ? null : requestParam.getSessionId(),
+                            BaseErrorCode.SERVICE_ERROR.code(),
+                            throwable.getMessage())));
+        } catch (Exception ex) {
+            log.warn("发送 SSE 错误事件失败", ex);
+        }
+    }
+
+    private void completeEmitter(SseEmitter emitter) {
+        try {
+            emitter.complete();
+        } catch (Exception ex) {
+            log.debug("SSE emitter 已关闭，忽略 complete 调用", ex);
+        }
+    }
+
+    private void completeEmitterWithError(SseEmitter emitter, ChatStreamReq requestParam, Throwable throwable,
+                                          AtomicBoolean closed) {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
+        sendUnexpectedStreamError(emitter, requestParam, throwable);
+        try {
+            emitter.completeWithError(throwable);
+        } catch (Exception ex) {
+            log.debug("SSE emitter 已关闭，忽略 completeWithError 调用", ex);
+        }
+    }
+
+    @Override
     public ChatMessageCreateResp createChatMessage(CreateChatMessageReq requestParam) {
         ChatMessageDO messageDO = new ChatMessageDO()
                 .setSessionId(requestParam.getSessionId())
@@ -232,6 +421,13 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return sessionDO;
     }
 
+    private void validateStreamRequest(ChatStreamReq requestParam) {
+        if (requestParam == null || requestParam.getSessionId() == null || requestParam.getUserId() == null
+                || !StringUtils.hasText(requestParam.getMessage())) {
+            throw new ClientException("会话ID、用户ID和消息内容不能为空");
+        }
+    }
+
     private UserDO requireUser(Long userId) {
         UserDO userDO = userMapper.selectById(userId);
         if (userDO == null || !DeleteFlagEnum.NORMAL.getCode().equals(userDO.getDeleteFlag())) {
@@ -246,9 +442,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         LambdaQueryWrapper<ChatMessageDO> queryWrapper = Wrappers.<ChatMessageDO>lambdaQuery()
                 .eq(ChatMessageDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())
                 .eq(ChatMessageDO::getSessionId, sessionId)
-                .orderByDesc(ChatMessageDO::getSequenceNo)
-                .last("limit " + limit);
-        List<ChatMessageDO> recentMessages = chatMessageMapper.selectList(queryWrapper);
+                .orderByDesc(ChatMessageDO::getSequenceNo);
+        Page<ChatMessageDO> page = new Page<>(1, limit, false);
+        List<ChatMessageDO> recentMessages = chatMessageMapper.selectPage(page, queryWrapper).getRecords();
         Collections.reverse(recentMessages);
         return recentMessages;
     }
@@ -283,6 +479,178 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .toList();
     }
 
+    private List<ChatStreamCitationResp> toStreamCitationResponses(List<RagRetrievalService.RetrievedChunk> retrievedChunks) {
+        return IntStream.range(0, retrievedChunks.size())
+                .mapToObj(index -> {
+                    RagRetrievalService.RetrievedChunk each = retrievedChunks.get(index);
+                    return new ChatStreamCitationResp()
+                            .setIndex(index + 1)
+                            .setDocumentId(each.documentId())
+                            .setDocumentTitle(each.documentTitle())
+                            .setChunkId(each.chunkId())
+                            .setChunkNo(each.chunkNo())
+                            .setReferenceLabel(each.documentTitle() + "（切片#" + each.chunkNo() + "）")
+                            .setSnippet(shorten(each.effectiveContent(), 120));
+                })
+                .toList();
+    }
+
+    private void persistUserMessage(ChatStreamReq requestParam, String traceId, int sequenceNo) {
+        ChatMessageDO userMessage = new ChatMessageDO()
+                .setSessionId(requestParam.getSessionId())
+                .setUserId(requestParam.getUserId())
+                .setRole("USER")
+                .setContent(requestParam.getMessage())
+                .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
+                .setSequenceNo(sequenceNo)
+                .setTraceId(traceId);
+        chatMessageMapper.insert(userMessage);
+    }
+
+    private Flux<ChatStreamEventResp> streamStaticAnswer(String traceId, ChatSessionDO sessionDO, Long userId,
+                                                         int assistantSequenceNo, String question, String answer) {
+        List<String> candidateIds = chatModelGateway.streamingCandidateIds();
+        String candidateId = candidateIds.isEmpty() ? "static" : candidateIds.get(0);
+        ChatModelInfoRecord modelInfo = candidateIds.isEmpty() ? null : chatModelGateway.candidateInfo(candidateId);
+        ChatMessageDO assistantMessage = persistAssistantMessage(
+                sessionDO.getId(), userId, assistantSequenceNo, traceId, answer, modelInfo);
+        updateSessionLastActiveAt(sessionDO.getId());
+        writeTrace(traceId, sessionDO.getId(), userId, "GENERATE", "SUCCESS", 0L, "intent=STATIC_REFUSAL");
+        return Flux.just(
+                ChatStreamEventResp.messageStart(traceId, sessionDO.getId(), candidateId, 1),
+                ChatStreamEventResp.delta(traceId, sessionDO.getId(), answer),
+                ChatStreamEventResp.messageEnd(traceId, sessionDO.getId(), assistantMessage.getId()));
+    }
+
+    private Flux<ChatStreamEventResp> streamByCandidates(String traceId, Long sessionId, Long userId,
+                                                         int assistantSequenceNo, String question,
+                                                         List<ChatStreamCitationResp> citations,
+                                                         List<String> candidateIds,
+                                                         CandidateStreamProvider streamProvider) {
+        if (candidateIds == null || candidateIds.isEmpty()) {
+            return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
+                    BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的聊天模型候选"));
+        }
+        return streamByCandidate(traceId, sessionId, userId, assistantSequenceNo, question, citations,
+                candidateIds, 0, 1, streamProvider);
+    }
+
+    private Flux<ChatStreamEventResp> streamByCandidate(String traceId, Long sessionId, Long userId,
+                                                        int assistantSequenceNo, String question,
+                                                        List<ChatStreamCitationResp> citations,
+                                                        List<String> candidateIds, int index, int attemptNo,
+                                                        CandidateStreamProvider streamProvider) {
+        if (index >= candidateIds.size()) {
+            writeTrace(traceId, sessionId, userId, "GENERATE", "FAILED", 0L, "all-candidates-exhausted");
+            return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
+                    BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的聊天模型候选"));
+        }
+        String candidateId = candidateIds.get(index);
+        if (!chatModelGateway.tryAcquireStreamingCandidate(candidateId)) {
+            writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
+                    "SKIPPED", 0L, "candidateId=" + candidateId + ",reason=skipped-circuit-open");
+            return streamByCandidate(traceId, sessionId, userId, assistantSequenceNo, question,
+                    citations, candidateIds, index + 1, attemptNo, streamProvider);
+        }
+
+        AtomicBoolean sawDelta = new AtomicBoolean(false);
+        AtomicBoolean messageStarted = new AtomicBoolean(false);
+        StringBuilder answerBuilder = new StringBuilder();
+        writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
+                "START", 0L, "candidateId=" + candidateId + ",attemptNo=" + attemptNo);
+
+        Flux<String> contentFlux = applyStreamTimeouts(streamProvider.stream(candidateId, question));
+        Flux<ChatStreamEventResp> attemptFlux = contentFlux.concatMap(each -> {
+                    sawDelta.set(true);
+                    answerBuilder.append(each);
+                    ChatStreamEventResp delta = ChatStreamEventResp.delta(traceId, sessionId, each);
+                    if (messageStarted.compareAndSet(false, true)) {
+                        return Flux.just(ChatStreamEventResp.messageStart(traceId, sessionId, candidateId, attemptNo), delta);
+                    }
+                    return Flux.just(delta);
+                })
+                .concatWith(Flux.defer(() -> {
+                    if (!sawDelta.get()) {
+                        return Flux.error(new IllegalStateException("聊天模型流式返回为空"));
+                    }
+                    chatModelGateway.markStreamingCandidateSuccess(candidateId);
+                    ChatModelInfoRecord modelInfo = chatModelGateway.candidateInfo(candidateId);
+                    ChatMessageDO assistantMessage = persistAssistantMessage(
+                            sessionId, userId, assistantSequenceNo, traceId, answerBuilder.toString(), modelInfo);
+                    updateSessionLastActiveAt(sessionId);
+                    writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
+                            "SUCCESS", 0L, "candidateId=" + candidateId);
+                    Flux<ChatStreamEventResp> citationFlux = citations == null || citations.isEmpty()
+                            ? Flux.empty()
+                            : Flux.just(ChatStreamEventResp.citation(traceId, sessionId, citations));
+                    return citationFlux.concatWithValues(ChatStreamEventResp.messageEnd(traceId, sessionId, assistantMessage.getId()));
+                }))
+                .onErrorResume(ex -> {
+                    chatModelGateway.markStreamingCandidateFailure(candidateId);
+                    String reason = resolveStreamFailureReason(ex, sawDelta.get());
+                    writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
+                            "FAILED", 0L, "candidateId=" + candidateId + ",reason=" + reason);
+                    Flux<ChatStreamEventResp> nextFlux = streamByCandidate(traceId, sessionId, userId, assistantSequenceNo,
+                            question, citations, candidateIds, index + 1, attemptNo + 1, streamProvider);
+                    if (sawDelta.get()) {
+                        return Flux.just(ChatStreamEventResp.reset(traceId, sessionId, candidateId, reason))
+                                .concatWith(nextFlux);
+                    }
+                    return nextFlux;
+                });
+        return attemptFlux;
+    }
+
+    private Flux<String> applyStreamTimeouts(Flux<String> source) {
+        Integer firstTokenTimeoutMillis = aiProperties.getCircuitBreaker().getFirstTokenTimeoutMillis();
+        Integer streamChunkIdleTimeoutMillis = aiProperties.getCircuitBreaker().getStreamChunkIdleTimeoutMillis();
+        if ((firstTokenTimeoutMillis == null || firstTokenTimeoutMillis <= 0)
+                && (streamChunkIdleTimeoutMillis == null || streamChunkIdleTimeoutMillis <= 0)) {
+            return source;
+        }
+        Mono<Long> firstTimeout = firstTokenTimeoutMillis != null && firstTokenTimeoutMillis > 0
+                ? Mono.delay(Duration.ofMillis(firstTokenTimeoutMillis))
+                : Mono.never();
+        if (firstTokenTimeoutMillis != null && firstTokenTimeoutMillis > 0
+                && streamChunkIdleTimeoutMillis != null && streamChunkIdleTimeoutMillis > 0) {
+            return source.timeout(firstTimeout, ignored -> Mono.delay(Duration.ofMillis(streamChunkIdleTimeoutMillis)));
+        }
+        if (firstTokenTimeoutMillis != null && firstTokenTimeoutMillis > 0) {
+            return source.timeout(firstTimeout, ignored -> Mono.never());
+        }
+        return source.timeout(Mono.never(), ignored -> Mono.delay(Duration.ofMillis(streamChunkIdleTimeoutMillis)));
+    }
+
+    private ChatMessageDO persistAssistantMessage(Long sessionId, Long userId, int sequenceNo, String traceId,
+                                                  String answer, ChatModelInfoRecord modelInfo) {
+        ChatMessageDO assistantMessage = new ChatMessageDO()
+                .setSessionId(sessionId)
+                .setUserId(userId)
+                .setRole("ASSISTANT")
+                .setContent(answer)
+                .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
+                .setSequenceNo(sequenceNo)
+                .setTraceId(traceId)
+                .setModelProvider(modelInfo == null ? null : modelInfo.provider())
+                .setModelName(modelInfo == null ? null : modelInfo.modelName());
+        chatMessageMapper.insert(assistantMessage);
+        return assistantMessage;
+    }
+
+    private void updateSessionLastActiveAt(Long sessionId) {
+        ChatSessionDO updateSession = new ChatSessionDO();
+        updateSession.setId(sessionId);
+        updateSession.setLastActiveAt(new Date());
+        chatSessionMapper.updateById(updateSession);
+    }
+
+    private String resolveStreamFailureReason(Throwable throwable, boolean hasOutput) {
+        if (throwable instanceof TimeoutException) {
+            return hasOutput ? "idle-timeout" : "first-token-timeout";
+        }
+        return "stream-error";
+    }
+
     private void writeTrace(String traceId, Long sessionId, Long userId, String stage,
                             String status, long latencyMs, String payload) {
         if (!Boolean.TRUE.equals(traceProperties.getEnabled())) {
@@ -308,5 +676,11 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             return text;
         }
         return text.substring(0, maxLength);
+    }
+
+    @FunctionalInterface
+    private interface CandidateStreamProvider {
+
+        Flux<String> stream(String candidateId, String question);
     }
 }

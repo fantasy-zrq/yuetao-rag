@@ -1,23 +1,21 @@
 package com.rag.cn.yuetaoragbackend.controller;
 
 import com.rag.cn.yuetaoragbackend.dto.req.ChatReq;
+import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
-import com.rag.cn.yuetaoragbackend.dto.resp.ChatResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatMessageCreateResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatMessageDetailResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatMessageListResp;
+import com.rag.cn.yuetaoragbackend.dto.resp.ChatResp;
 import com.rag.cn.yuetaoragbackend.framework.convention.Result;
 import com.rag.cn.yuetaoragbackend.framework.web.Results;
 import com.rag.cn.yuetaoragbackend.service.ChatMessageService;
-import java.util.List;
 import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.util.List;
 
 /**
  * @author zrq
@@ -33,6 +31,11 @@ public class ChatMessageController {
     @PostMapping("/chat")
     public Result<ChatResp> chat(@RequestBody ChatReq requestParam) {
         return Results.success(chatMessageService.chat(requestParam));
+    }
+
+    @PostMapping(value = "/chatstream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter chatStream(@RequestBody ChatStreamReq requestParam) {
+        return chatMessageService.chatStream(requestParam);
     }
 
     @PostMapping("/create")

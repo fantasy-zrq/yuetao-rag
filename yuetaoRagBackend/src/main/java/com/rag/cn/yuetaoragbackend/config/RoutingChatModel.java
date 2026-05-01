@@ -14,11 +14,9 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.util.CollectionUtils;
 import reactor.core.publisher.Flux;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * @author zrq
@@ -69,48 +67,7 @@ public class RoutingChatModel implements ChatModel {
 
     @Override
     public Flux<ChatResponse> stream(Prompt prompt) {
-        return stream(prompt, 0, null);
-    }
-
-    private Flux<ChatResponse> stream(Prompt prompt, int index, RuntimeException lastException) {
-        if (index >= candidates.size()) {
-            if (lastException != null) {
-                return Flux.error(lastException);
-            }
-            return Flux.error(new RemoteException("当前没有可用的聊天模型候选", BaseErrorCode.REMOTE_ERROR));
-        }
-        ChatModelCandidateRuntimeRecord candidate = candidates.get(index);
-        if (!candidate.tryAcquire(circuitBreakerProperties)) {
-            return stream(prompt, index + 1, lastException);
-        }
-        AtomicBoolean successMarked = new AtomicBoolean(false);
-        Flux<ChatResponse> source = candidate.chatModel().stream(prompt);
-        Integer firstTokenTimeoutMillis = circuitBreakerProperties.getFirstTokenTimeoutMillis();
-        if (firstTokenTimeoutMillis != null && firstTokenTimeoutMillis > 0) {
-            source = source.timeout(Duration.ofMillis(firstTokenTimeoutMillis));
-        }
-        return source
-                .doOnNext(ignored -> {
-                    if (successMarked.compareAndSet(false, true)) {
-                        candidate.onSuccess();
-                        lastSuccessfulCandidate = candidate;
-                    }
-                })
-                .doOnComplete(() -> {
-                    if (successMarked.compareAndSet(false, true)) {
-                        candidate.onSuccess();
-                        lastSuccessfulCandidate = candidate;
-                    }
-                })
-                .onErrorResume(ex -> {
-                    candidate.onFailure(circuitBreakerProperties);
-                    RuntimeException runtimeException = ex instanceof RuntimeException
-                            ? (RuntimeException) ex
-                            : new RemoteException("聊天模型流式调用失败", ex, BaseErrorCode.REMOTE_ERROR);
-                    log.warn("ChatModel 流式调用失败，尝试切换下一个候选: candidateId={}, provider={}, model={}",
-                            candidate.id(), candidate.provider(), candidate.modelName(), ex);
-                    return stream(prompt, index + 1, runtimeException);
-                });
+        throw new UnsupportedOperationException("chatstream 流式编排由 ChatMessageServiceImpl 负责");
     }
 
     @Override
@@ -121,6 +78,19 @@ public class RoutingChatModel implements ChatModel {
     public ChatModelRuntimeInfoRecord currentModelInfo() {
         ChatModelCandidateRuntimeRecord current = lastSuccessfulCandidate == null ? candidates.get(0) : lastSuccessfulCandidate;
         return new ChatModelRuntimeInfoRecord(current.provider(), current.modelName(), current.id(), current.state());
+    }
+
+    public List<ChatModelCandidateRuntimeRecord> candidatesForStreaming() {
+        return this.candidates;
+    }
+
+    public void markStreamingSuccess(ChatModelCandidateRuntimeRecord candidate) {
+        candidate.onSuccess();
+        lastSuccessfulCandidate = candidate;
+    }
+
+    public void markStreamingFailure(ChatModelCandidateRuntimeRecord candidate) {
+        candidate.onFailure(circuitBreakerProperties);
     }
 
     public static List<ChatModelCandidateRuntimeRecord> runtimes(List<AiProperties.ChatCandidateProperties> candidates,

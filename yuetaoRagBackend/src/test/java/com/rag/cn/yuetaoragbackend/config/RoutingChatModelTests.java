@@ -91,6 +91,31 @@ class RoutingChatModelTests {
                 .isInstanceOf(RuntimeException.class);
     }
 
+    @Test
+    void shouldExposeCandidatesForServiceLevelStreamingOrchestration() {
+        RoutingChatModel routingChatModel = new RoutingChatModel(
+                List.of(
+                        runtime("qwen-plus", "bailian", "qwen-plus", 100, primaryModel),
+                        runtime("glm-4.7", "siliconflow", "Pro/zai-org/GLM-4.7", 60, fallbackModel)
+                ),
+                circuitBreakerProperties());
+
+        assertThat(routingChatModel.candidatesForStreaming())
+                .extracting(ChatModelCandidateRuntimeRecord::id)
+                .containsExactly("qwen-plus", "glm-4.7");
+    }
+
+    @Test
+    void shouldRejectDirectStreamBecauseServiceOwnsStreamingOrchestration() {
+        RoutingChatModel routingChatModel = new RoutingChatModel(
+                List.of(runtime("qwen-plus", "bailian", "qwen-plus", 100, primaryModel)),
+                circuitBreakerProperties());
+
+        assertThatThrownBy(() -> routingChatModel.stream(new Prompt("hello")))
+                .isInstanceOf(UnsupportedOperationException.class)
+                .hasMessageContaining("chatstream");
+    }
+
     private ChatModelCandidateRuntimeRecord runtime(String id, String provider, String modelName, int priority, ChatModel chatModel) {
         return new ChatModelCandidateRuntimeRecord(
                 id, provider, modelName, priority, chatModel, new ChatModelStateHolder());

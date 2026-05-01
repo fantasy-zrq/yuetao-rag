@@ -55,15 +55,16 @@ class ConfigurationPropertiesBindingTests {
         assertThat(aiProperties.getProviders()).containsKeys("bailian", "siliconflow");
         assertThat(aiProperties.getProviders().get("bailian").getApiKey()).isEqualTo("aliyun-test-key");
         assertThat(aiProperties.getChat().getDefaultModel()).isEqualTo("qwen-plus");
-        assertThat(aiProperties.getChat().getDeepThinkingModel()).isEqualTo("glm-4.7");
+        assertThat(aiProperties.getChat().getDeepThinkingModel()).isEqualTo("qwen-plus");
         assertThat(aiProperties.getChat().getCandidates()).hasSize(3);
         assertThat(aiProperties.getChat().getCandidates().get(0).getProvider()).isEqualTo("bailian");
         assertThat(aiProperties.getEmbedding().getDefaultModel()).isEqualTo("text-embedding-v4");
         assertThat(aiProperties.getRerank().getDefaultModel()).isEqualTo("qwen3-vl-rerank");
         assertThat(aiProperties.getCircuitBreaker().getFailureThreshold()).isEqualTo(3);
+        assertThat(aiProperties.getCircuitBreaker().getStreamChunkIdleTimeoutMillis()).isEqualTo(5000);
 
         assertThat(retrievalProperties.getTopK()).isEqualTo(8);
-        assertThat(memoryProperties.getRecentWindowSize()).isEqualTo(12);
+        assertThat(memoryProperties.getRecentWindowSize()).isEqualTo(30);
         assertThat(authzProperties.getAdminRoleCodes()).isEqualTo(List.of("ADMIN"));
         assertThat(traceProperties.getEnabled()).isTrue();
     }

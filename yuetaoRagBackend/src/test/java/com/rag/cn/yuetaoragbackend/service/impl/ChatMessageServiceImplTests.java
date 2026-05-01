@@ -2,6 +2,7 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -10,6 +11,7 @@ import static org.mockito.Mockito.when;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
 import com.rag.cn.yuetaoragbackend.config.enums.ChatSessionStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
+import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatMessageDO;
@@ -20,14 +22,19 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.ChatSessionMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.QaTraceLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatReq;
+import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatResp;
+import com.rag.cn.yuetaoragbackend.dto.resp.ChatStreamEventResp;
 import java.util.List;
+import java.time.Duration;
+import java.util.concurrent.ExecutorService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import reactor.core.publisher.Flux;
 
 /**
  * @author zrq
@@ -54,9 +61,14 @@ class ChatMessageServiceImplTests {
     @Mock
     private RagRetrievalService ragRetrievalService;
 
+    @Mock
+    private ExecutorService chatStreamExecutor;
+
     private MemoryProperties memoryProperties;
 
     private TraceProperties traceProperties;
+
+    private AiProperties aiProperties;
 
     @InjectMocks
     private ChatMessageServiceImpl chatMessageService;
@@ -68,6 +80,11 @@ class ChatMessageServiceImplTests {
         traceProperties = new TraceProperties();
         traceProperties.setEnabled(true);
         traceProperties.setLogPayload(true);
+        aiProperties = new AiProperties();
+        aiProperties.getCircuitBreaker().setFirstTokenTimeoutMillis(2000);
+        aiProperties.getCircuitBreaker().setStreamChunkIdleTimeoutMillis(2000);
+        lenient().when(chatMessageMapper.selectPage(any(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         chatMessageService = new ChatMessageServiceImpl(
                 chatMessageMapper,
                 chatSessionMapper,
@@ -76,14 +93,15 @@ class ChatMessageServiceImplTests {
                 chatModelGateway,
                 ragRetrievalService,
                 memoryProperties,
-                traceProperties);
+                traceProperties,
+                aiProperties,
+                chatStreamExecutor);
     }
 
     @Test
     void shouldChatWithoutKnowledgeRetrievalForChitchatIntent() {
         when(chatSessionMapper.selectById(10L)).thenReturn(session());
         when(userMapper.selectById(20L)).thenReturn(user());
-        when(chatMessageMapper.selectList(any())).thenReturn(List.of());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.generateChitchatAnswer("你好", List.of()))
                 .thenReturn("你好，请问有什么可以帮你？");
@@ -107,7 +125,6 @@ class ChatMessageServiceImplTests {
     void shouldChatWithKnowledgeCitationsForKnowledgeIntent() {
         when(chatSessionMapper.selectById(10L)).thenReturn(session());
         when(userMapper.selectById(20L)).thenReturn(user());
-        when(chatMessageMapper.selectList(any())).thenReturn(List.of());
         when(chatModelGateway.classifyQuestionIntent("商品退货规则是什么", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("商品退货规则是什么", List.of())).thenReturn("商品退货规则");
         List<RagRetrievalService.RetrievedChunk> recalledChunks = List.of(
@@ -140,7 +157,6 @@ class ChatMessageServiceImplTests {
     void shouldRefuseAnswerWhenRerankResultsEmpty() {
         when(chatSessionMapper.selectById(10L)).thenReturn(session());
         when(userMapper.selectById(20L)).thenReturn(user());
-        when(chatMessageMapper.selectList(any())).thenReturn(List.of());
         when(chatModelGateway.classifyQuestionIntent("报销流程是什么", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("报销流程是什么", List.of())).thenReturn("报销流程");
         when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(List.of());
@@ -157,6 +173,83 @@ class ChatMessageServiceImplTests {
         assertThat(response.getAnswer()).isEqualTo("当前知识库中没有该方面的内容，暂时无法回答这个问题。");
         assertThat(response.getCitations()).isEmpty();
         verify(chatModelGateway, never()).generateAnswer(any(String.class), any(String.class), any(List.class), any(List.class));
+    }
+
+    @Test
+    void shouldBuildStreamEventPayloadForDelta() {
+        ChatStreamEventResp event = ChatStreamEventResp.delta("trace-1", 10L, "你好");
+
+        assertThat(event.getEvent()).isEqualTo("delta");
+        assertThat(event.getTraceId()).isEqualTo("trace-1");
+        assertThat(event.getSessionId()).isEqualTo(10L);
+        assertThat(event.getContent()).isEqualTo("你好");
+    }
+
+    @Test
+    void shouldStreamRefusalAnswerWhenRerankResultsEmpty() {
+        when(chatSessionMapper.selectById(10L)).thenReturn(session());
+        when(userMapper.selectById(20L)).thenReturn(user());
+        when(chatModelGateway.classifyQuestionIntent("报销流程是什么", List.of())).thenReturn("KB_QA");
+        when(chatModelGateway.rewriteQuestion("报销流程是什么", List.of())).thenReturn("报销流程");
+        when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(List.of());
+        when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(List.of());
+        when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("qwen-plus"));
+        when(chatModelGateway.candidateInfo("qwen-plus")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setUserId(20L)
+                        .setMessage("报销流程是什么"))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsExactly("message_start", "delta", "message_end");
+    }
+
+    @Test
+    void shouldEmitResetWhenFirstCandidateFailsAfterDelta() {
+        when(chatSessionMapper.selectById(10L)).thenReturn(session());
+        when(userMapper.selectById(20L)).thenReturn(user());
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a", "candidate-b"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
+        when(chatModelGateway.tryAcquireStreamingCandidate("candidate-b")).thenReturn(true);
+        when(chatModelGateway.streamChitchatByCandidate("candidate-a", "你好", List.of()))
+                .thenReturn(Flux.concat(Flux.just("你"), Flux.error(new RuntimeException("stream-error"))));
+        when(chatModelGateway.streamChitchatByCandidate("candidate-b", "你好", List.of()))
+                .thenReturn(Flux.just("你好，请问有什么可以帮你？"));
+        when(chatModelGateway.candidateInfo("candidate-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setUserId(20L)
+                        .setMessage("你好")
+                        .setTraceId("trace-1"))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsSequence("delta", "reset", "message_start", "delta", "message_end");
+    }
+
+    @Test
+    void shouldNotPersistUserMessageWhenStreamPreparationFails() {
+        when(chatSessionMapper.selectById(10L)).thenReturn(session());
+        when(userMapper.selectById(20L)).thenReturn(user());
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of()))
+                .thenThrow(new RuntimeException("gateway down"));
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setUserId(20L)
+                        .setMessage("你好"))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsExactly("error");
+        verify(chatMessageMapper, never()).insert(any(ChatMessageDO.class));
     }
 
     private ChatSessionDO session() {

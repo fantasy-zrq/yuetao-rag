@@ -3,6 +3,7 @@ package com.rag.cn.yuetaoragbackend.controller;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,6 +36,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import reactor.core.publisher.Flux;
 
 /**
  * @author zrq
@@ -331,6 +333,139 @@ class ChatMessageControllerTests {
         assertThat(json.path("code").asText()).isEqualTo("B000001");
     }
 
+    @Test
+    void shouldReturnSseStreamForChatstream() throws Exception {
+        UserDO user = persistUser("USER");
+        ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("qwen-plus"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("qwen-plus")).thenReturn(true);
+        when(chatModelGateway.streamChitchatByCandidate("qwen-plus", "你好", List.of()))
+                .thenReturn(Flux.just("你", "好"));
+        when(chatModelGateway.candidateInfo("qwen-plus")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.post("/chat-messages/chatstream")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "sessionId": %d,
+                                  "userId": %d,
+                                  "message": "你好"
+                                }
+                                """.formatted(session.getId(), user.getId())))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        String responseBody = awaitResponseContains(mvcResult, "event:message_end");
+        assertThat(mvcResult.getResponse().getContentType()).contains("text/event-stream");
+        assertThat(responseBody).contains("event:message_start");
+        assertThat(responseBody).contains("event:delta");
+        assertThat(responseBody).contains("event:message_end");
+    }
+
+    @Test
+    void shouldCompleteKnowledgeChatstreamWithResetAndPersistOnlyFinalAssistant() throws Exception {
+        UserDO user = persistUser("USER");
+        ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        String question = "商品退货规则是什么";
+        List<RagRetrievalService.RetrievedChunk> recalledChunks = List.of(
+                new RagRetrievalService.RetrievedChunk(101L, 201L, "商品退货规则", 3,
+                        "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0D, 0D));
+        List<RagRetrievalService.RetrievedChunk> rerankedChunks = List.of(
+                new RagRetrievalService.RetrievedChunk(101L, 201L, "商品退货规则", 3,
+                        "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0.50D, 0.71D));
+        when(chatModelGateway.classifyQuestionIntent(question, List.of())).thenReturn("KB_QA");
+        when(chatModelGateway.rewriteQuestion(question, List.of())).thenReturn("商品退货规则");
+        when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(recalledChunks);
+        when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(rerankedChunks);
+        when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("qwen-plus", "glm-4.7"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("qwen-plus")).thenReturn(true);
+        when(chatModelGateway.tryAcquireStreamingCandidate("glm-4.7")).thenReturn(true);
+        when(chatModelGateway.streamKnowledgeAnswerByCandidate("qwen-plus", question, "商品退货规则", List.of(), rerankedChunks))
+                .thenReturn(Flux.concat(Flux.just("错误半截"), Flux.error(new RuntimeException("model connection lost"))));
+        when(chatModelGateway.streamKnowledgeAnswerByCandidate("glm-4.7", question, "商品退货规则", List.of(), rerankedChunks))
+                .thenReturn(Flux.just("商品支持7天无理由退货", "，特殊品类除外。"));
+        when(chatModelGateway.candidateInfo("glm-4.7")).thenReturn(new ChatModelInfoRecord("siliconflow", "GLM-4.7"));
+
+        MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.post("/chat-messages/chatstream")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "sessionId": %d,
+                                  "userId": %d,
+                                  "message": "%s",
+                                  "traceId": "trace-real-user-reset"
+                                }
+                                """.formatted(session.getId(), user.getId(), question)))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        String responseBody = awaitResponseContains(mvcResult, "event:message_end");
+        assertThat(responseBody).contains("event:message_start");
+        assertThat(responseBody).contains("event:delta");
+        assertThat(responseBody).contains("event:reset");
+        assertThat(responseBody).contains("event:citation");
+        assertThat(responseBody).contains("event:message_end");
+        assertThat(responseBody.indexOf("event:reset")).isLessThan(responseBody.lastIndexOf("event:message_start"));
+        assertThat(responseBody).contains("qwen-plus");
+        assertThat(responseBody).contains("glm-4.7");
+
+        List<ChatMessageDO> messages = listMessages(session.getId());
+        assertThat(messages).hasSize(2);
+        assertThat(messages.get(0).getRole()).isEqualTo("USER");
+        assertThat(messages.get(0).getContent()).isEqualTo(question);
+        assertThat(messages.get(1).getRole()).isEqualTo("ASSISTANT");
+        assertThat(messages.get(1).getContent()).isEqualTo("商品支持7天无理由退货，特殊品类除外。");
+        assertThat(messages.get(1).getContent()).doesNotContain("错误半截");
+        assertThat(messages.get(1).getModelName()).isEqualTo("GLM-4.7");
+
+        List<QaTraceLogDO> traces = listTraceLogs(session.getId());
+        assertThat(traces).anySatisfy(each -> {
+            assertThat(each.getStage()).isEqualTo("STREAM_CANDIDATE");
+            assertThat(each.getStatus()).isEqualTo("FAILED");
+        });
+        assertThat(traces).anySatisfy(each -> {
+            assertThat(each.getStage()).isEqualTo("STREAM_CANDIDATE");
+            assertThat(each.getStatus()).isEqualTo("SUCCESS");
+        });
+    }
+
+    @Test
+    void shouldHideCandidateThatFailsBeforeFirstDeltaInChatstream() throws Exception {
+        UserDO user = persistUser("USER");
+        ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("qwen-plus", "glm-4.7"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("qwen-plus")).thenReturn(true);
+        when(chatModelGateway.tryAcquireStreamingCandidate("glm-4.7")).thenReturn(true);
+        when(chatModelGateway.streamChitchatByCandidate("qwen-plus", "你好", List.of()))
+                .thenReturn(Flux.error(new RuntimeException("first token failed")));
+        when(chatModelGateway.streamChitchatByCandidate("glm-4.7", "你好", List.of()))
+                .thenReturn(Flux.just("你好，请问有什么可以帮你？"));
+        when(chatModelGateway.candidateInfo("glm-4.7")).thenReturn(new ChatModelInfoRecord("siliconflow", "GLM-4.7"));
+
+        MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.post("/chat-messages/chatstream")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "sessionId": %d,
+                                  "userId": %d,
+                                  "message": "你好",
+                                  "traceId": "trace-first-token-failure"
+                                }
+                                """.formatted(session.getId(), user.getId())))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        String responseBody = awaitResponseContains(mvcResult, "event:message_end");
+        assertThat(responseBody).doesNotContain("event:reset");
+        assertThat(responseBody).doesNotContain("qwen-plus");
+        assertThat(countOccurrences(responseBody, "event:message_start")).isEqualTo(1);
+        assertThat(responseBody).contains("glm-4.7");
+        assertThat(responseBody).contains("event:message_end");
+        assertThat(listMessages(session.getId())).hasSize(2);
+    }
+
     private UserDO persistUser(String roleCode) {
         UserDO userDO = new UserDO();
         userDO.setId(ID_SEQUENCE.incrementAndGet());
@@ -367,5 +502,42 @@ class ChatMessageControllerTests {
         return qaTraceLogMapper.selectCount(Wrappers.<QaTraceLogDO>lambdaQuery()
                 .eq(QaTraceLogDO::getSessionId, sessionId)
                 .eq(QaTraceLogDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
+    }
+
+    private List<ChatMessageDO> listMessages(Long sessionId) {
+        return chatMessageMapper.selectList(Wrappers.<ChatMessageDO>lambdaQuery()
+                .eq(ChatMessageDO::getSessionId, sessionId)
+                .eq(ChatMessageDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())
+                .orderByAsc(ChatMessageDO::getSequenceNo));
+    }
+
+    private List<QaTraceLogDO> listTraceLogs(Long sessionId) {
+        return qaTraceLogMapper.selectList(Wrappers.<QaTraceLogDO>lambdaQuery()
+                .eq(QaTraceLogDO::getSessionId, sessionId)
+                .eq(QaTraceLogDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())
+                .orderByAsc(QaTraceLogDO::getId));
+    }
+
+    private int countOccurrences(String text, String target) {
+        int count = 0;
+        int index = 0;
+        while ((index = text.indexOf(target, index)) >= 0) {
+            count++;
+            index += target.length();
+        }
+        return count;
+    }
+
+    private String awaitResponseContains(MvcResult mvcResult, String expected) throws Exception {
+        long deadline = System.currentTimeMillis() + 3000L;
+        String responseBody;
+        do {
+            responseBody = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+            if (responseBody.contains(expected)) {
+                return responseBody;
+            }
+            Thread.sleep(50L);
+        } while (System.currentTimeMillis() < deadline);
+        return responseBody;
     }
 }
