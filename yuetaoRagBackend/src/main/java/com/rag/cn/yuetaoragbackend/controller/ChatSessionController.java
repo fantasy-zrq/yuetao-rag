@@ -8,6 +8,7 @@ import com.rag.cn.yuetaoragbackend.framework.convention.Result;
 import com.rag.cn.yuetaoragbackend.framework.web.Results;
 import com.rag.cn.yuetaoragbackend.service.ChatSessionService;
 import java.util.List;
+import java.util.Map;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -41,5 +42,11 @@ public class ChatSessionController {
     @GetMapping("/detail/{id}")
     public Result<ChatSessionDetailResp> getChatSession(@PathVariable("id") Long id) {
         return Results.success(chatSessionService.getChatSession(id));
+    }
+
+    @PostMapping("/delete")
+    public Result<Void> deleteChatSession(@RequestBody Map<String, Long> requestParam) {
+        chatSessionService.deleteChatSession(requestParam.get("id"));
+        return Results.success();
     }
 }

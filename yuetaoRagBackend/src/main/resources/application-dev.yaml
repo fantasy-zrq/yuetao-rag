@@ -3,6 +3,9 @@ server:
   servlet:
     context-path: /yuetaoRag
 
+sa-token:
+  token-name: Authorization
+
 spring:
   application:
     name: YueTaoRag

@@ -67,4 +67,12 @@ public class ChatSessionServiceImpl extends ServiceImpl<ChatSessionMapper, ChatS
         BeanUtils.copyProperties(sessionDO, response);
         return response;
     }
+
+    @Override
+    public void deleteChatSession(Long id) {
+        ChatSessionDO updateSession = new ChatSessionDO();
+        updateSession.setId(id);
+        updateSession.setDeleteFlag(DeleteFlagEnum.DELETED.getCode());
+        chatSessionMapper.updateById(updateSession);
+    }
 }

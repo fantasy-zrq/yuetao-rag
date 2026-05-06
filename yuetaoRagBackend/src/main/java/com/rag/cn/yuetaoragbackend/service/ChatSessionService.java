@@ -19,4 +19,6 @@ public interface ChatSessionService extends IService<ChatSessionDO> {
     List<ChatSessionListResp> listByUserId(Long userId);
 
     ChatSessionDetailResp getChatSession(Long id);
+
+    void deleteChatSession(Long id);
 }

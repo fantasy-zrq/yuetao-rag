@@ -44,4 +44,9 @@ public class UserDO extends BaseDO {
      * 用户状态：ENABLED-启用，DISABLED-停用。
      */
     private String status;
+
+    /**
+     * 登录密码哈希。
+     */
+    private String passwordHash;
 }

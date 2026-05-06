@@ -509,6 +509,7 @@ CREATE TABLE "public"."t_user" (
     "create_time" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "update_time" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "delete_flag" int2 NOT NULL DEFAULT 0,
+    "password_hash" varchar(255),
     PRIMARY KEY ("id")
 );
 
@@ -540,13 +541,7 @@ CREATE INDEX idx_t_user_department_rank_status ON public.t_user USING btree (dep
 
 
 
-INSERT INTO "public"."t_document_chunk_log" ("id", "document_id", "knowledge_base_id", "operation_type", "status", "chunk_mode", "chunk_config", "chunk_count", "split_cost_millis", "vector_cost_millis", "total_cost_millis", "error_message", "start_time", "end_time", "created_by", "updated_by", "create_time", "update_time", "delete_flag") VALUES
-(2050129245948145666, 2050129239237259265, 2050129233365233666, 'REBUILD', 'PROCESSING', 'STRUCTURE_AWARE', '{"chunkSize": 800, "chunkOverlap": 80}', 0, 0, 0, 0, NULL, '2026-05-01 16:24:36.638', NULL, 10001, 10001, '2026-05-01 16:24:36.64', '2026-05-01 16:24:36.64', 0),
-(2050129253594361858, 2050129253518864385, 2050129253489504258, 'SPLIT', 'PROCESSING', 'FIXED', '{"chunkSize": 512, "chunkOverlap": 50}', 0, 0, 0, 0, NULL, '2026-05-01 16:24:38.274', NULL, 10001, 10001, '2026-05-01 16:24:38.275', '2026-05-01 16:24:38.276', 0),
-(2050130170397876225, 2050130164437770241, 2050130159685623809, 'REBUILD', 'PROCESSING', 'STRUCTURE_AWARE', '{"chunkSize": 800, "chunkOverlap": 80}', 0, 0, 0, 0, NULL, '2026-05-01 16:28:16.989', NULL, 10001, 10001, '2026-05-01 16:28:16.995', '2026-05-01 16:28:16.995', 0),
-(2050130177603690498, 2050130177549164546, 2050130177528193026, 'SPLIT', 'PROCESSING', 'FIXED', '{"chunkSize": 512, "chunkOverlap": 50}', 0, 0, 0, 0, NULL, '2026-05-01 16:28:18.575', NULL, 10001, 10001, '2026-05-01 16:28:18.576', '2026-05-01 16:28:18.577', 0),
-(2050136606477721602, 2050136600068825089, 2050136595106963457, 'REBUILD', 'PROCESSING', 'STRUCTURE_AWARE', '{"chunkSize": 800, "chunkOverlap": 80}', 0, 0, 0, 0, NULL, '2026-05-01 16:53:51.49', NULL, 10001, 10001, '2026-05-01 16:53:51.495', '2026-05-01 16:53:51.495', 0),
-(2050136615155736578, 2050136615088627714, 2050136615063461889, 'SPLIT', 'PROCESSING', 'FIXED', '{"chunkSize": 512, "chunkOverlap": 50}', 0, 0, 0, 0, NULL, '2026-05-01 16:53:53.408', NULL, 10001, 10001, '2026-05-01 16:53:53.41', '2026-05-01 16:53:53.41', 0);
+
 
 
 
