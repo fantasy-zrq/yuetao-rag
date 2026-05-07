@@ -16,6 +16,7 @@ import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatMessageDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatSessionDO;
+import com.rag.cn.yuetaoragbackend.dao.entity.QaTraceLogDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChatMessageMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChatSessionMapper;
@@ -27,6 +28,7 @@ import com.rag.cn.yuetaoragbackend.dto.resp.ChatResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatStreamEventResp;
 import java.util.List;
 import java.time.Duration;
+import org.mockito.ArgumentCaptor;
 import java.util.concurrent.ExecutorService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -231,6 +233,35 @@ class ChatMessageServiceImplTests {
 
         assertThat(events).extracting(ChatStreamEventResp::getEvent)
                 .containsSequence("delta", "reset", "message_start", "delta", "message_end");
+    }
+
+    @Test
+    void shouldRecordPositiveLatenciesForStreamingTraceStages() {
+        when(chatSessionMapper.selectById(10L)).thenReturn(session());
+        when(userMapper.selectById(20L)).thenReturn(user());
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
+        when(chatModelGateway.streamChitchatByCandidate("candidate-a", "你好", List.of()))
+                .thenReturn(Flux.just("你", "好"));
+        when(chatModelGateway.candidateInfo("candidate-a")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setUserId(20L)
+                        .setMessage("你好")
+                        .setTraceId("trace-1"))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsExactly("message_start", "delta", "delta", "message_end");
+
+        ArgumentCaptor<QaTraceLogDO> captor = ArgumentCaptor.forClass(QaTraceLogDO.class);
+        verify(qaTraceLogMapper, times(2)).insert(captor.capture());
+        assertThat(captor.getAllValues())
+                .extracting(QaTraceLogDO::getLatencyMs)
+                .allMatch(value -> value != null && value > 0);
     }
 
     @Test

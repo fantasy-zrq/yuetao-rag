@@ -28,6 +28,8 @@ import com.rag.cn.yuetaoragbackend.dto.req.CreateKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.DeleteKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.SplitKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.UpdateKnowledgeDocumentReq;
+import com.rag.cn.yuetaoragbackend.dto.req.UpdateKnowledgeDocumentStatusReq;
+import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentChunkLogResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentCreateResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentDetailResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentListResp;
@@ -194,6 +196,35 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public KnowledgeDocumentDetailResp updateKnowledgeDocumentStatus(UpdateKnowledgeDocumentStatusReq requestParam) {
+        KnowledgeDocumentDO documentDO = getNormalDocumentOrThrow(requestParam.getId());
+        String status = normalizeStatusOrThrow(requestParam.getStatus());
+        KnowledgeDocumentDO updateDO = new KnowledgeDocumentDO();
+        updateDO.setId(documentDO.getId());
+        updateDO.setStatus(status);
+        updateDO.setUpdatedBy(currentUserId());
+        knowledgeDocumentMapper.updateById(updateDO);
+        documentDO.setStatus(status);
+        return toDetailResp(documentDO);
+    }
+
+    @Override
+    public List<KnowledgeDocumentChunkLogResp> listChunkLogs(Long documentId) {
+        return documentChunkLogMapper.selectList(Wrappers.<DocumentChunkLogDO>lambdaQuery()
+                        .eq(DocumentChunkLogDO::getDocumentId, documentId)
+                        .eq(DocumentChunkLogDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())
+                        .orderByDesc(DocumentChunkLogDO::getStartTime))
+                .stream()
+                .map(each -> {
+                    KnowledgeDocumentChunkLogResp response = new KnowledgeDocumentChunkLogResp();
+                    BeanUtils.copyProperties(each, response);
+                    return response;
+                })
+                .toList();
+    }
+
+    @Override
     public List<KnowledgeDocumentListResp> listByKnowledgeBaseId(Long knowledgeBaseId) {
         return knowledgeDocumentMapper.selectList(Wrappers.<KnowledgeDocumentDO>lambdaQuery()
                         .eq(KnowledgeDocumentDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())
@@ -203,6 +234,7 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
                 .map(each -> {
                     KnowledgeDocumentListResp response = new KnowledgeDocumentListResp();
                     BeanUtils.copyProperties(each, response);
+                    response.setChunkCount(countChunks(each.getId()));
                     return response;
                 })
                 .toList();
@@ -214,12 +246,30 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
         if (documentDO == null) {
             return null;
         }
+        return toDetailResp(documentDO);
+    }
+
+    private KnowledgeDocumentDetailResp toDetailResp(KnowledgeDocumentDO documentDO) {
         KnowledgeDocumentDetailResp response = new KnowledgeDocumentDetailResp();
         BeanUtils.copyProperties(documentDO, response);
+        response.setChunkCount(countChunks(documentDO.getId()));
         response.setAuthorizedDepartmentIds(VisibilityScopeEnum.SENSITIVE.getCode().equals(documentDO.getVisibilityScope())
-                ? listDocumentDepartmentIds(id)
+                ? listDocumentDepartmentIds(documentDO.getId())
                 : List.of());
         return response;
+    }
+
+    private Integer countChunks(Long documentId) {
+        return Math.toIntExact(chunkMapper.selectCount(Wrappers.<ChunkDO>lambdaQuery()
+                .eq(ChunkDO::getDocumentId, documentId)
+                .eq(ChunkDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())));
+    }
+
+    private String normalizeStatusOrThrow(String status) {
+        if (CommonStatusEnum.ENABLED.getCode().equals(status) || CommonStatusEnum.DISABLED.getCode().equals(status)) {
+            return status;
+        }
+        throw new ClientException("文档状态非法：" + status);
     }
 
     private String resolveCreateVisibilityScope(String visibilityScope) {

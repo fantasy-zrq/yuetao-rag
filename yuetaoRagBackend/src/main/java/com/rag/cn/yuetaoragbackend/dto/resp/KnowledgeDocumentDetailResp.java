@@ -64,6 +64,9 @@ public class KnowledgeDocumentDetailResp {
     /** 文档状态。 */
     private String status;
 
+    /** 当前分块数量。 */
+    private Integer chunkCount;
+
     /** 创建时间。 */
     private Date createTime;
 

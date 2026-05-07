@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.rag.cn.yuetaoragbackend.dao.mapper.QaTraceLogMapper">
+
+    <!-- 分页查询 trace runs -->
+    <select id="selectPageRuns" resultType="java.util.Map">
+        select trace_id,
+               min(create_time) as start_time,
+               max(create_time) as end_time,
+               max(session_id) as session_id,
+               max(user_id) as user_id,
+               case
+                   when bool_or(lower(status) = 'failed') then 'FAILED'
+                   when bool_or(lower(status) = 'running') then 'RUNNING'
+                   else 'SUCCESS'
+               end as status,
+               greatest(
+                   sum(coalesce(latency_ms, 0)),
+                   cast(round(extract(epoch from (max(create_time) - min(create_time))) * 1000) as bigint),
+                   1
+               ) as duration_ms
+          from t_qa_trace_log
+        <where>
+            <if test="traceIdPattern != null and traceIdPattern != ''">
+                and trace_id like #{traceIdPattern}
+            </if>
+        </where>
+        group by trace_id
+        order by max(create_time) desc
+    </select>
+
+    <!-- 按 traceId 查询单条 run 详情 -->
+    <select id="selectDetailByTraceId" resultType="java.util.Map">
+        select trace_id,
+               min(create_time) as start_time,
+               max(create_time) as end_time,
+               max(session_id) as session_id,
+               max(user_id) as user_id,
+               case
+                   when bool_or(lower(status) = 'failed') then 'FAILED'
+                   when bool_or(lower(status) = 'running') then 'RUNNING'
+                   else 'SUCCESS'
+               end as status,
+               greatest(
+                   sum(coalesce(latency_ms, 0)),
+                   cast(round(extract(epoch from (max(create_time) - min(create_time))) * 1000) as bigint),
+                   1
+               ) as duration_ms
+          from t_qa_trace_log
+         where trace_id = #{traceId}
+         group by trace_id
+    </select>
+
+    <!-- 查询某个 trace 的所有节点（按时间排序，带 lead 窗口函数） -->
+    <select id="selectNodesByTraceId" resultType="java.util.Map">
+        select trace_id, stage, status, latency_ms, payload_ref, create_time, session_id, user_id, next_create_time, id
+          from (
+            select trace_id,
+                   stage,
+                   status,
+                   latency_ms,
+                   payload_ref,
+                   create_time,
+                   session_id,
+                   user_id,
+                   id,
+                   lead(create_time) over (partition by trace_id order by create_time asc, id asc) as next_create_time
+              from t_qa_trace_log
+             where trace_id = #{traceId}
+          ) t
+         order by create_time asc, id asc
+    </select>
+
+</mapper>

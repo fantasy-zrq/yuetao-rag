@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { BookOpen, ChevronLeft, FileText, LogOut, MessageSquareText, Search, UserRound } from "lucide-react";
+import { BookOpen, ChevronLeft, LogOut, MessageSquareText, Search, UserRound, Workflow } from "lucide-react";
 
 import { Button } from "@/components/Button";
 import { useAuthStore } from "@/stores/authStore";
@@ -47,15 +47,15 @@ export function AppShell() {
           >
             <span className="admin-sidebar__item-indicator" />
             <BookOpen className="admin-sidebar__item-icon" size={18} />
-            知识库管理
+            知识库与文档管理
           </NavLink>
           <NavLink
-            to="/admin/documents"
+            to="/admin/traces"
             className={({ isActive }) => `admin-sidebar__item ${isActive ? "admin-sidebar__item--active" : ""}`}
           >
             <span className="admin-sidebar__item-indicator" />
-            <FileText className="admin-sidebar__item-icon" size={18} />
-            文档管理
+            <Workflow className="admin-sidebar__item-icon" size={18} />
+            链路追踪
           </NavLink>
         </nav>
         <div className="admin-sidebar__footer">

@@ -1,6 +1,6 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { BookPlus, Pencil, Search, Trash2 } from "lucide-react";
+import { BookOpen, BookPlus, Database, FolderOpen, Layers3, Pencil, RefreshCw, Search, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/Badge";
@@ -31,10 +31,31 @@ export function KnowledgePage() {
   const [editing, setEditing] = useState<KnowledgeBase | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
-  const filtered = useMemo(
-    () => items.filter((item) => item.name.toLowerCase().includes(keyword.trim().toLowerCase())),
-    [items, keyword]
+  const sortedItems = useMemo(
+    () =>
+      [...items].sort((left, right) => {
+        const leftTime = new Date(left.updateTime || left.createTime || 0).getTime();
+        const rightTime = new Date(right.updateTime || right.createTime || 0).getTime();
+        return rightTime - leftTime;
+      }),
+    [items]
   );
+  const filtered = useMemo(
+    () =>
+      sortedItems.filter((item) =>
+        [item.name, item.description, item.status, item.embeddingModel, item.collectionName]
+          .filter(Boolean)
+          .some((field) => String(field).toLowerCase().includes(keyword.trim().toLowerCase()))
+      ),
+    [sortedItems, keyword]
+  );
+  const stats = useMemo(() => {
+    const totalCount = items.length;
+    const enabledCount = items.filter((item) => item.status === "ENABLED").length;
+    const collectionCount = new Set(items.map((item) => item.collectionName).filter(Boolean)).size;
+    const modelCount = new Set(items.map((item) => item.embeddingModel).filter(Boolean)).size;
+    return { totalCount, enabledCount, collectionCount, modelCount };
+  }, [items]);
 
   async function load() {
     setLoading(true);
@@ -59,17 +80,29 @@ export function KnowledgePage() {
   }
 
   return (
-    <section className="page-surface">
-      <header className="page-header">
+    <section className="admin-page">
+      <header className="admin-page-header">
         <div>
-          <h1>知识库</h1>
-          <p>基于当前 `/knowledge-bases` 接口管理知识集合。</p>
+          <h1 className="admin-page-title">知识库管理</h1>
+          <p className="admin-page-subtitle">基于当前 `/knowledge-bases` 接口管理知识集合</p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <BookPlus size={16} />
-          新建知识库
-        </Button>
+        <div className="admin-page-actions">
+          <Button variant="secondary" onClick={() => load()} disabled={loading}>
+            <RefreshCw size={16} />
+            刷新
+          </Button>
+          <Button onClick={() => setCreateOpen(true)}>
+            <BookPlus size={16} />
+            新建知识库
+          </Button>
+        </div>
       </header>
+      <div className="admin-stat-grid">
+        <StatCard icon={<Database size={18} />} label="知识库总数" value={stats.totalCount} />
+        <StatCard icon={<BookOpen size={18} />} label="启用中的知识库" value={stats.enabledCount} />
+        <StatCard icon={<FolderOpen size={18} />} label="集合数量" value={stats.collectionCount} />
+        <StatCard icon={<Layers3 size={18} />} label="向量模型数" value={stats.modelCount} />
+      </div>
       <div className="toolbar">
         <div className="search-box">
           <Search size={16} />
@@ -84,6 +117,7 @@ export function KnowledgePage() {
             <thead>
               <tr>
                 <th>名称</th>
+                <th>描述</th>
                 <th>状态</th>
                 <th>向量模型</th>
                 <th>Collection</th>
@@ -98,8 +132,9 @@ export function KnowledgePage() {
                     <Link className="table-title" to={`/admin/knowledge/${item.id}`}>
                       {item.name}
                     </Link>
-                    <small>{item.description || "无描述"}</small>
+                    <small>ID: {item.id}</small>
                   </td>
+                  <td className="table-clamp">{item.description || "无描述"}</td>
                   <td>
                     <Badge value={item.status} />
                   </td>
@@ -107,10 +142,13 @@ export function KnowledgePage() {
                   <td>{item.collectionName || "-"}</td>
                   <td>{formatDate(item.updateTime)}</td>
                   <td className="table-actions">
-                    <button className="icon-btn" onClick={() => setEditing(item)} aria-label="重命名">
+                    <Link className="icon-btn" to={`/admin/knowledge/${item.id}`} aria-label="查看文档" title="查看文档">
+                      <FolderOpen size={16} />
+                    </Link>
+                    <button className="icon-btn" onClick={() => setEditing(item)} aria-label="重命名" title="重命名">
                       <Pencil size={16} />
                     </button>
-                    <button className="icon-btn danger" onClick={() => handleDelete(item.id)} aria-label="删除">
+                    <button className="icon-btn danger" onClick={() => handleDelete(item.id)} aria-label="删除" title="删除">
                       <Trash2 size={16} />
                     </button>
                   </td>
@@ -126,18 +164,31 @@ export function KnowledgePage() {
   );
 }
 
+function StatCard({ icon, label, value }: { icon: ReactNode; label: string; value: number }) {
+  return (
+    <div className="admin-stat-card">
+      <div>
+        <div className="admin-stat-label">{label}</div>
+        <div className="admin-stat-value">{value}</div>
+      </div>
+      <div className="admin-stat-icon">{icon}</div>
+    </div>
+  );
+}
+
 function KnowledgeBaseForm({ open, onClose, onDone }: { open: boolean; onClose: () => void; onDone: () => void }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [embeddingModel, setEmbeddingModel] = useState("text-embedding-v4");
   const [collectionName, setCollectionName] = useState("");
+  const [status, setStatus] = useState("ENABLED");
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     await createKnowledgeBase({
       name,
       description,
-      status: "ENABLED",
+      status,
       embeddingModel,
       collectionName: normalizeCollectionName(collectionName) || createDefaultCollectionName()
     });
@@ -163,6 +214,13 @@ function KnowledgeBaseForm({ open, onClose, onDone }: { open: boolean; onClose: 
         <label>
           默认向量模型
           <input value={embeddingModel} onChange={(event) => setEmbeddingModel(event.target.value)} />
+        </label>
+        <label>
+          状态
+          <select value={status} onChange={(event) => setStatus(event.target.value)}>
+            <option value="ENABLED">ENABLED</option>
+            <option value="DISABLED">DISABLED</option>
+          </select>
         </label>
         <label>
           Collection 名称

@@ -6,6 +6,8 @@ import com.rag.cn.yuetaoragbackend.dto.req.CreateKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.DeleteKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.SplitKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.UpdateKnowledgeDocumentReq;
+import com.rag.cn.yuetaoragbackend.dto.req.UpdateKnowledgeDocumentStatusReq;
+import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentChunkLogResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentCreateResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentDetailResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentListResp;
@@ -25,6 +27,10 @@ public interface KnowledgeDocumentService extends IService<KnowledgeDocumentDO> 
     void deleteKnowledgeDocument(DeleteKnowledgeDocumentReq requestParam);
 
     void splitKnowledgeDocument(SplitKnowledgeDocumentReq requestParam);
+
+    KnowledgeDocumentDetailResp updateKnowledgeDocumentStatus(UpdateKnowledgeDocumentStatusReq requestParam);
+
+    List<KnowledgeDocumentChunkLogResp> listChunkLogs(Long documentId);
 
     List<KnowledgeDocumentListResp> listByKnowledgeBaseId(Long knowledgeBaseId);
 

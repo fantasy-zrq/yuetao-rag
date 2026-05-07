@@ -44,6 +44,7 @@ export interface KnowledgeDocument {
   visibilityScope?: string | null;
   minRankLevel?: number | null;
   status?: string | null;
+  chunkCount?: number | null;
   createTime?: string | null;
   updateTime?: string | null;
   authorizedDepartmentIds?: string[];

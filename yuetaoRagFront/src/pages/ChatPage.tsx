@@ -2,6 +2,7 @@ import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "
 import { useNavigate, useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import {
+  BookOpen,
   Bot,
   CircleStop,
   LogOut,
@@ -10,7 +11,6 @@ import {
   MessageSquarePlus,
   Search,
   Send,
-  Settings,
   Trash2,
   UserRound
 } from "lucide-react";
@@ -139,12 +139,12 @@ export function ChatPage() {
             <strong>新建对话</strong>
             <small>从空白开始</small>
           </button>
-          {user?.role === "admin" ? (
-            <button type="button" className="admin-link-pill" onClick={() => navigate("/admin/knowledge")}>
-              <Settings size={14} />
-              管理后台
-            </button>
-          ) : null}
+          <button type="button" className="chat-admin-entry" onClick={() => navigate("/admin/knowledge")}>
+            <span>
+              <BookOpen size={15} />
+            </span>
+            <strong>知识库与文档管理</strong>
+          </button>
         </div>
         <div className="session-search-card">
           <div className="quick-card-head">

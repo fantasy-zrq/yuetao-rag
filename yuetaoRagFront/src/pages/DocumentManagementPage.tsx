@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { FileText, RefreshCw, Scissors, Search, Trash2 } from "lucide-react";
+import { Database, FileText, RefreshCw, Scissors, Search, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/Badge";
@@ -23,13 +23,25 @@ export function DocumentManagementPage() {
 
   const filtered = useMemo(() => {
     const value = keyword.trim().toLowerCase();
-    if (!value) return items;
-    return items.filter(({ kb, doc }) =>
+    const sorted = [...items].sort((left, right) => {
+      const leftTime = new Date(left.doc.updateTime || left.doc.createTime || 0).getTime();
+      const rightTime = new Date(right.doc.updateTime || right.doc.createTime || 0).getTime();
+      return rightTime - leftTime;
+    });
+    if (!value) return sorted;
+    return sorted.filter(({ kb, doc }) =>
       [kb.name, doc.title, doc.parseStatus, doc.status, doc.chunkMode]
         .filter(Boolean)
         .some((field) => String(field).toLowerCase().includes(value))
     );
   }, [items, keyword]);
+  const stats = useMemo(() => {
+    const total = items.length;
+    const knowledgeBaseCount = new Set(items.map(({ kb }) => kb.id)).size;
+    const success = items.filter(({ doc }) => String(doc.parseStatus).toUpperCase() === "SUCCESS").length;
+    const failed = items.filter(({ doc }) => String(doc.parseStatus).toUpperCase() === "FAILED").length;
+    return { total, knowledgeBaseCount, success, failed };
+  }, [items]);
 
   async function load() {
     setLoading(true);
@@ -71,17 +83,23 @@ export function DocumentManagementPage() {
   }
 
   return (
-    <section className="page-surface">
-      <header className="page-header">
+    <section className="admin-page">
+      <header className="admin-page-header">
         <div>
-          <h1>文档管理</h1>
-          <p>集中查看全部知识库下的文档、解析状态和切分任务。</p>
+          <h1 className="admin-page-title">文档管理</h1>
+          <p className="admin-page-subtitle">集中查看全部知识库下的文档、解析状态和切分任务。</p>
         </div>
         <Button variant="secondary" onClick={load} disabled={loading}>
           <RefreshCw size={16} />
           刷新
         </Button>
       </header>
+      <div className="admin-stat-grid">
+        <StatCard icon={<FileText size={18} />} label="文档总数" value={stats.total} />
+        <StatCard icon={<Database size={18} />} label="知识库数量" value={stats.knowledgeBaseCount} />
+        <StatCard icon={<ShieldCheck size={18} />} label="解析成功" value={stats.success} />
+        <StatCard icon={<Trash2 size={18} />} label="解析失败" value={stats.failed} />
+      </div>
       <div className="toolbar">
         <div className="search-box">
           <Search size={16} />
@@ -128,10 +146,10 @@ export function DocumentManagementPage() {
                   <td>{doc.chunkMode || "-"}</td>
                   <td>{formatDate(doc.updateTime)}</td>
                   <td className="table-actions">
-                    <button className="icon-btn" onClick={() => handleSplit(doc.id)} aria-label="切分">
+                    <button className="icon-btn" onClick={() => handleSplit(doc.id)} aria-label="切分" title="切分">
                       <Scissors size={16} />
                     </button>
-                    <button className="icon-btn danger" onClick={() => handleDelete(doc.id)} aria-label="删除">
+                    <button className="icon-btn danger" onClick={() => handleDelete(doc.id)} aria-label="删除" title="删除">
                       <Trash2 size={16} />
                     </button>
                   </td>
@@ -142,5 +160,17 @@ export function DocumentManagementPage() {
         </div>
       )}
     </section>
+  );
+}
+
+function StatCard({ icon, label, value }: { icon: ReactNode; label: string; value: number }) {
+  return (
+    <div className="admin-stat-card">
+      <div>
+        <div className="admin-stat-label">{label}</div>
+        <div className="admin-stat-value">{value}</div>
+      </div>
+      <div className="admin-stat-icon">{icon}</div>
+    </div>
   );
 }

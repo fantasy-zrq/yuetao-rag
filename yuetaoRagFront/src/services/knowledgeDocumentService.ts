@@ -8,7 +8,7 @@ export interface UploadDocumentPayload {
   chunkConfig?: string;
   visibilityScope: string;
   minRankLevel?: number;
-  authorizedDepartmentIds?: string[];
+  authorizedDepartmentIds?: number[];
 }
 
 export interface UpdateDocumentPayload {
@@ -18,7 +18,23 @@ export interface UpdateDocumentPayload {
   chunkConfig?: string;
   visibilityScope?: string;
   minRankLevel?: number;
-  authorizedDepartmentIds?: string[];
+  authorizedDepartmentIds?: number[];
+}
+
+export interface KnowledgeDocumentChunkLog {
+  id: string;
+  documentId: string;
+  knowledgeBaseId?: string | null;
+  operationType?: string | null;
+  status?: string | null;
+  chunkMode?: string | null;
+  chunkCount?: number | null;
+  splitCostMillis?: number | null;
+  vectorCostMillis?: number | null;
+  totalCostMillis?: number | null;
+  errorMessage?: string | null;
+  startTime?: string | null;
+  endTime?: string | null;
 }
 
 export async function listDocuments(knowledgeBaseId: string) {
@@ -39,10 +55,8 @@ export async function uploadDocument(payload: UploadDocumentPayload) {
   formData.append("visibilityScope", payload.visibilityScope);
   if (payload.chunkConfig) formData.append("chunkConfig", payload.chunkConfig);
   if (payload.minRankLevel !== undefined) formData.append("minRankLevel", String(payload.minRankLevel));
-  payload.authorizedDepartmentIds?.forEach((id) => formData.append("authorizedDepartmentIds", id));
-  return api.post<KnowledgeDocument, KnowledgeDocument>("/knowledge-documents/create", formData, {
-    headers: { "Content-Type": "multipart/form-data" }
-  });
+  payload.authorizedDepartmentIds?.forEach((id) => formData.append("authorizedDepartmentIds", String(id)));
+  return api.post<KnowledgeDocument, KnowledgeDocument>("/knowledge-documents/create", formData);
 }
 
 export async function updateDocument(payload: UpdateDocumentPayload) {
@@ -55,4 +69,12 @@ export async function deleteDocument(id: string) {
 
 export async function splitDocument(documentId: string) {
   return api.post<void, void>("/knowledge-documents/split", { documentId });
+}
+
+export async function toggleDocumentStatus(id: string, status: string) {
+  return api.post("/knowledge-documents/status", { id, status });
+}
+
+export async function listDocumentChunkLogs(documentId: string) {
+  return api.get<KnowledgeDocumentChunkLog[], KnowledgeDocumentChunkLog[]>(`/knowledge-documents/${documentId}/chunk-logs`);
 }

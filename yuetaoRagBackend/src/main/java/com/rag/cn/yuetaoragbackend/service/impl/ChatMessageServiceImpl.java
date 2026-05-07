@@ -134,7 +134,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 answer = "当前知识库中没有该方面的内容，暂时无法回答这个问题。";
                 writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "GENERATE",
                         "CANCELLED",
-                        0L,
+                        1L,
                         "rerank-empty");
             } else {
                 long generateStart = System.nanoTime();
@@ -250,9 +250,10 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             int nextSequenceNo = nextSequenceNo(recentMessages);
             List<String> historyTexts = toHistoryTexts(recentMessages);
 
+            long intentStart = System.nanoTime();
             String intentType = chatModelGateway.classifyQuestionIntent(requestParam.getMessage(), historyTexts);
             writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "INTENT",
-                    "SUCCESS", 0L, "intent=" + intentType);
+                    "SUCCESS", elapsedMillis(intentStart), "intent=" + intentType);
 
             if ("CHITCHAT".equals(intentType)) {
                 persistUserMessage(requestParam, traceId, nextSequenceNo);
@@ -267,15 +268,18 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                         (candidateId, ignored) -> chatModelGateway.streamChitchatByCandidate(candidateId, requestParam.getMessage(), historyTexts));
             }
 
+            long rewriteStart = System.nanoTime();
             String rewrittenQuery = chatModelGateway.rewriteQuestion(requestParam.getMessage(), historyTexts);
             writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "REWRITE",
-                    "SUCCESS", 0L, "rewrittenQuery=" + shorten(rewrittenQuery, 240));
+                    "SUCCESS", elapsedMillis(rewriteStart), "rewrittenQuery=" + shorten(rewrittenQuery, 240));
+            long retrieveStart = System.nanoTime();
             List<RagRetrievalService.RetrievedChunk> recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
             writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "RETRIEVE",
-                    "SUCCESS", 0L, "candidateCount=" + recalledChunks.size());
+                    "SUCCESS", elapsedMillis(retrieveStart), "candidateCount=" + recalledChunks.size());
+            long rerankStart = System.nanoTime();
             List<RagRetrievalService.RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
             writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "RERANK",
-                    "SUCCESS", 0L, "rerankCount=" + rerankedChunks.size());
+                    "SUCCESS", elapsedMillis(rerankStart), "rerankCount=" + rerankedChunks.size());
 
             if (rerankedChunks.isEmpty()) {
                 persistUserMessage(requestParam, traceId, nextSequenceNo);
@@ -509,13 +513,14 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
     private Flux<ChatStreamEventResp> streamStaticAnswer(String traceId, ChatSessionDO sessionDO, Long userId,
                                                          int assistantSequenceNo, String question, String answer) {
+        long generateStart = System.nanoTime();
         List<String> candidateIds = chatModelGateway.streamingCandidateIds();
         String candidateId = candidateIds.isEmpty() ? "static" : candidateIds.get(0);
         ChatModelInfoRecord modelInfo = candidateIds.isEmpty() ? null : chatModelGateway.candidateInfo(candidateId);
         ChatMessageDO assistantMessage = persistAssistantMessage(
                 sessionDO.getId(), userId, assistantSequenceNo, traceId, answer, modelInfo);
         updateSessionLastActiveAt(sessionDO.getId());
-        writeTrace(traceId, sessionDO.getId(), userId, "GENERATE", "SUCCESS", 0L, "intent=STATIC_REFUSAL");
+        writeTrace(traceId, sessionDO.getId(), userId, "GENERATE", "SUCCESS", elapsedMillis(generateStart), "intent=STATIC_REFUSAL");
         return Flux.just(
                 ChatStreamEventResp.messageStart(traceId, sessionDO.getId(), candidateId, 1),
                 ChatStreamEventResp.delta(traceId, sessionDO.getId(), answer),
@@ -531,33 +536,34 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
                     BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的聊天模型候选"));
         }
+        long generationStart = System.nanoTime();
         return streamByCandidate(traceId, sessionId, userId, assistantSequenceNo, question, citations,
-                candidateIds, 0, 1, streamProvider);
+                candidateIds, 0, 1, generationStart, streamProvider);
     }
 
     private Flux<ChatStreamEventResp> streamByCandidate(String traceId, Long sessionId, Long userId,
                                                         int assistantSequenceNo, String question,
                                                         List<ChatStreamCitationResp> citations,
                                                         List<String> candidateIds, int index, int attemptNo,
+                                                        long generationStartNanos,
                                                         CandidateStreamProvider streamProvider) {
         if (index >= candidateIds.size()) {
-            writeTrace(traceId, sessionId, userId, "GENERATE", "FAILED", 0L, "all-candidates-exhausted");
+            writeTrace(traceId, sessionId, userId, "GENERATE", "FAILED", elapsedMillis(generationStartNanos), "all-candidates-exhausted");
             return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
                     BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的聊天模型候选"));
         }
         String candidateId = candidateIds.get(index);
+        long attemptStart = System.nanoTime();
         if (!chatModelGateway.tryAcquireStreamingCandidate(candidateId)) {
             writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                    "SKIPPED", 0L, "candidateId=" + candidateId + ",reason=skipped-circuit-open");
+                    "SKIPPED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=skipped-circuit-open");
             return streamByCandidate(traceId, sessionId, userId, assistantSequenceNo, question,
-                    citations, candidateIds, index + 1, attemptNo, streamProvider);
+                    citations, candidateIds, index + 1, attemptNo, generationStartNanos, streamProvider);
         }
 
         AtomicBoolean sawDelta = new AtomicBoolean(false);
         AtomicBoolean messageStarted = new AtomicBoolean(false);
         StringBuilder answerBuilder = new StringBuilder();
-        writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                "START", 0L, "candidateId=" + candidateId + ",attemptNo=" + attemptNo);
 
         Flux<String> contentFlux = applyStreamTimeouts(streamProvider.stream(candidateId, question));
         Flux<ChatStreamEventResp> attemptFlux = contentFlux.concatMap(each -> {
@@ -579,7 +585,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                             sessionId, userId, assistantSequenceNo, traceId, answerBuilder.toString(), modelInfo);
                     updateSessionLastActiveAt(sessionId);
                     writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                            "SUCCESS", 0L, "candidateId=" + candidateId);
+                            "SUCCESS", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",attemptNo=" + attemptNo);
                     Flux<ChatStreamEventResp> citationFlux = citations == null || citations.isEmpty()
                             ? Flux.empty()
                             : Flux.just(ChatStreamEventResp.citation(traceId, sessionId, citations));
@@ -589,9 +595,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     chatModelGateway.markStreamingCandidateFailure(candidateId);
                     String reason = resolveStreamFailureReason(ex, sawDelta.get());
                     writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                            "FAILED", 0L, "candidateId=" + candidateId + ",reason=" + reason);
+                            "FAILED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=" + reason);
                     Flux<ChatStreamEventResp> nextFlux = streamByCandidate(traceId, sessionId, userId, assistantSequenceNo,
-                            question, citations, candidateIds, index + 1, attemptNo + 1, streamProvider);
+                            question, citations, candidateIds, index + 1, attemptNo + 1, generationStartNanos, streamProvider);
                     if (sawDelta.get()) {
                         return Flux.just(ChatStreamEventResp.reset(traceId, sessionId, candidateId, reason))
                                 .concatWith(nextFlux);
@@ -668,7 +674,12 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     }
 
     private long elapsedMillis(long startNanos) {
-        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+        long elapsedNanos = System.nanoTime() - startNanos;
+        if (elapsedNanos <= 0) {
+            return 0L;
+        }
+        long millis = TimeUnit.NANOSECONDS.toMillis(elapsedNanos);
+        return Math.max(1L, millis);
     }
 
     private String shorten(String text, int maxLength) {

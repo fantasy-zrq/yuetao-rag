@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import * as chatService from "@/services/chatService";
 import * as knowledgeBaseService from "@/services/knowledgeBaseService";
 import * as knowledgeDocumentService from "@/services/knowledgeDocumentService";
+import * as ragTraceService from "@/services/ragTraceService";
 
 describe("backend service coverage", () => {
   it("exposes every current knowledge base endpoint", () => {
@@ -20,6 +21,8 @@ describe("backend service coverage", () => {
     expect(knowledgeDocumentService.updateDocument).toBeTypeOf("function");
     expect(knowledgeDocumentService.deleteDocument).toBeTypeOf("function");
     expect(knowledgeDocumentService.splitDocument).toBeTypeOf("function");
+    expect(knowledgeDocumentService.toggleDocumentStatus).toBeTypeOf("function");
+    expect(knowledgeDocumentService.listDocumentChunkLogs).toBeTypeOf("function");
   });
 
   it("exposes every current chat session/message endpoint", () => {
@@ -32,5 +35,10 @@ describe("backend service coverage", () => {
     expect(chatService.getChatMessage).toBeTypeOf("function");
     expect(chatService.sendChatMessage).toBeTypeOf("function");
     expect(chatService.streamChatMessage).toBeTypeOf("function");
+  });
+
+  it("exposes every current rag trace endpoint", () => {
+    expect(ragTraceService.getRagTraceRuns).toBeTypeOf("function");
+    expect(ragTraceService.getRagTraceDetail).toBeTypeOf("function");
   });
 });

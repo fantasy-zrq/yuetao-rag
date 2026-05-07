@@ -6,6 +6,8 @@ import { DocumentManagementPage } from "@/pages/DocumentManagementPage";
 import { DocumentDetailPage } from "@/pages/DocumentDetailPage";
 import { KnowledgeDocumentsPage } from "@/pages/KnowledgeDocumentsPage";
 import { KnowledgePage } from "@/pages/KnowledgePage";
+import { RagTraceDetailPage } from "@/pages/RagTraceDetailPage";
+import { RagTracePage } from "@/pages/RagTracePage";
 import { LoginPage } from "@/pages/LoginPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
 import { useAuthStore } from "@/stores/authStore";
@@ -43,9 +45,11 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/admin/knowledge" replace /> },
       { path: "knowledge", element: <KnowledgePage /> },
-      { path: "documents", element: <DocumentManagementPage /> },
       { path: "knowledge/:kbId", element: <KnowledgeDocumentsPage /> },
-      { path: "knowledge/:kbId/docs/:docId", element: <DocumentDetailPage /> }
+      { path: "knowledge/:kbId/docs/:docId", element: <DocumentDetailPage /> },
+      { path: "traces", element: <RagTracePage /> },
+      { path: "traces/:traceId", element: <RagTraceDetailPage /> },
+      { path: "documents", element: <DocumentManagementPage /> }
     ]
   },
   { path: "/", element: <Navigate to="/chat" replace /> },

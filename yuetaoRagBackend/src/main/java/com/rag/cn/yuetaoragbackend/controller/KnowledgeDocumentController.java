@@ -4,6 +4,8 @@ import com.rag.cn.yuetaoragbackend.dto.req.CreateKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.DeleteKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.SplitKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.UpdateKnowledgeDocumentReq;
+import com.rag.cn.yuetaoragbackend.dto.req.UpdateKnowledgeDocumentStatusReq;
+import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentChunkLogResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentCreateResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentDetailResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentListResp;
@@ -50,9 +52,19 @@ public class KnowledgeDocumentController {
         return Results.success();
     }
 
+    @PostMapping("/status")
+    public Result<KnowledgeDocumentDetailResp> updateKnowledgeDocumentStatus(@RequestBody UpdateKnowledgeDocumentStatusReq requestParam) {
+        return Results.success(knowledgeDocumentService.updateKnowledgeDocumentStatus(requestParam));
+    }
+
     @GetMapping("/list")
     public Result<List<KnowledgeDocumentListResp>> listKnowledgeDocuments(@RequestParam("knowledgeBaseId") Long knowledgeBaseId) {
         return Results.success(knowledgeDocumentService.listByKnowledgeBaseId(knowledgeBaseId));
+    }
+
+    @GetMapping("/{id}/chunk-logs")
+    public Result<List<KnowledgeDocumentChunkLogResp>> listChunkLogs(@PathVariable("id") Long id) {
+        return Results.success(knowledgeDocumentService.listChunkLogs(id));
     }
 
     @GetMapping("/detail/{id}")

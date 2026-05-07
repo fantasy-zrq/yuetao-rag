@@ -33,6 +33,12 @@ public class KnowledgeDocumentListResp {
     /** 文档状态。 */
     private String status;
 
+    /** 文件大小。 */
+    private Long fileSize;
+
+    /** 当前分块数量。 */
+    private Integer chunkCount;
+
     /** 更新时间。 */
     private Date updateTime;
 }
