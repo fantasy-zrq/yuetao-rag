@@ -10,6 +10,8 @@ import com.rag.cn.yuetaoragbackend.dto.req.CreateChatSessionReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionCreateResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionDetailResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionListResp;
+import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
+import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import com.rag.cn.yuetaoragbackend.service.ChatSessionService;
 
 import java.util.List;
@@ -63,6 +65,10 @@ public class ChatSessionServiceImpl extends ServiceImpl<ChatSessionMapper, ChatS
         if (sessionDO == null) {
             return null;
         }
+        Long userId = currentUserId();
+        if (!userId.equals(sessionDO.getUserId())) {
+            throw new ClientException("无权访问该会话");
+        }
         ChatSessionDetailResp response = new ChatSessionDetailResp();
         BeanUtils.copyProperties(sessionDO, response);
         return response;
@@ -74,5 +80,13 @@ public class ChatSessionServiceImpl extends ServiceImpl<ChatSessionMapper, ChatS
         updateSession.setId(id);
         updateSession.setDeleteFlag(DeleteFlagEnum.DELETED.getCode());
         chatSessionMapper.updateById(updateSession);
+    }
+
+    private Long currentUserId() {
+        try {
+            return Long.parseLong(UserContext.requireUser().getUserId());
+        } catch (NumberFormatException ex) {
+            throw new ClientException("当前登录用户ID非法");
+        }
     }
 }
