@@ -11,9 +11,6 @@ import lombok.experimental.Accessors;
 @Accessors(chain = true)
 public class CreateChatSessionReq {
 
-    /** 所属用户ID。 */
-    private Long userId;
-
     /** 会话标题。 */
     private String title;
 

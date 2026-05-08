@@ -14,9 +14,6 @@ public class CreateChatMessageReq {
     /** 所属会话ID。 */
     private Long sessionId;
 
-    /** 所属用户ID。 */
-    private Long userId;
-
     /** 消息角色。 */
     private String role;
 

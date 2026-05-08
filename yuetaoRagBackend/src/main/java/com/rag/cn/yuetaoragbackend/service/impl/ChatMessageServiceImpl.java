@@ -400,9 +400,12 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
     @Override
     public ChatMessageCreateResp createChatMessage(CreateChatMessageReq requestParam) {
+        Long userId = currentUserId();
+        requireSessionForCreate(requestParam.getSessionId(), userId);
+        requireUser(userId);
         ChatMessageDO messageDO = new ChatMessageDO()
                 .setSessionId(requestParam.getSessionId())
-                .setUserId(requestParam.getUserId())
+                .setUserId(userId)
                 .setRole(requestParam.getRole())
                 .setContent(requestParam.getContent())
                 .setContentType(requestParam.getContentType() == null || requestParam.getContentType().isBlank()
@@ -453,6 +456,17 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         }
         if (!ChatSessionStatusEnum.ACTIVE.getCode().equals(sessionDO.getStatus())) {
             throw new ClientException("当前会话不可继续提问");
+        }
+        return sessionDO;
+    }
+
+    private ChatSessionDO requireSessionForCreate(Long sessionId, Long userId) {
+        ChatSessionDO sessionDO = chatSessionMapper.selectById(sessionId);
+        if (sessionDO == null || !DeleteFlagEnum.NORMAL.getCode().equals(sessionDO.getDeleteFlag())) {
+            throw new ClientException("会话不存在");
+        }
+        if (!userId.equals(sessionDO.getUserId())) {
+            throw new ClientException("无权访问该会话");
         }
         return sessionDO;
     }

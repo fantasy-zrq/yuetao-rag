@@ -2,11 +2,15 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.rag.cn.yuetaoragbackend.config.enums.ChatSessionStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatSessionDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChatSessionMapper;
+import com.rag.cn.yuetaoragbackend.dto.req.CreateChatSessionReq;
+import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionCreateResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionDetailResp;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
@@ -15,6 +19,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -75,5 +80,18 @@ class ChatSessionServiceImplTests {
         ChatSessionDetailResp result = chatSessionService.getChatSession(999L);
 
         assertThat(result).isNull();
+    }
+
+    @Test
+    void shouldCreateSessionForCurrentUser() {
+        ChatSessionCreateResp result = chatSessionService.createChatSession(new CreateChatSessionReq()
+                .setTitle("new-session")
+                .setStatus(ChatSessionStatusEnum.ACTIVE.getCode()));
+
+        ArgumentCaptor<ChatSessionDO> sessionCaptor = ArgumentCaptor.forClass(ChatSessionDO.class);
+        verify(chatSessionMapper).insert(sessionCaptor.capture());
+        assertThat(sessionCaptor.getValue().getUserId()).isEqualTo(20L);
+        assertThat(sessionCaptor.getValue().getTitle()).isEqualTo("new-session");
+        assertThat(result.getUserId()).isEqualTo(20L);
     }
 }

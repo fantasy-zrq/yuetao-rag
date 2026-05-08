@@ -33,8 +33,9 @@ public class ChatSessionServiceImpl extends ServiceImpl<ChatSessionMapper, ChatS
 
     @Override
     public ChatSessionCreateResp createChatSession(CreateChatSessionReq requestParam) {
+        Long userId = currentUserId();
         ChatSessionDO sessionDO = new ChatSessionDO()
-                .setUserId(requestParam.getUserId())
+                .setUserId(userId)
                 .setTitle(requestParam.getTitle())
                 .setStatus(requestParam.getStatus() == null || requestParam.getStatus().isBlank()
                         ? ChatSessionStatusEnum.ACTIVE.getCode() : requestParam.getStatus());

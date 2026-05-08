@@ -1,6 +1,7 @@
 package com.rag.cn.yuetaoragbackend.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
@@ -27,8 +28,10 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.QaTraceLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatReq;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
+import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatStreamEventResp;
+import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import java.util.List;
 import java.time.Duration;
 import org.mockito.ArgumentCaptor;
@@ -182,6 +185,43 @@ class ChatMessageServiceImplTests {
         assertThat(response.getAnswer()).isEqualTo("当前知识库中没有该方面的内容，暂时无法回答这个问题。");
         assertThat(response.getCitations()).isEmpty();
         verify(chatModelGateway, never()).generateAnswer(any(String.class), any(String.class), any(List.class), any(List.class));
+    }
+
+    @Test
+    void shouldCreateMessageForCurrentUser() {
+        when(chatSessionMapper.selectById(10L)).thenReturn(session());
+        when(userMapper.selectById(20L)).thenReturn(user());
+
+        chatMessageService.createChatMessage(new CreateChatMessageReq()
+                .setSessionId(10L)
+                .setRole("USER")
+                .setContent("你好")
+                .setSequenceNo(1));
+
+        ArgumentCaptor<ChatMessageDO> messageCaptor = ArgumentCaptor.forClass(ChatMessageDO.class);
+        verify(chatMessageMapper).insert(messageCaptor.capture());
+        assertThat(messageCaptor.getValue().getUserId()).isEqualTo(20L);
+        assertThat(messageCaptor.getValue().getSessionId()).isEqualTo(10L);
+        assertThat(messageCaptor.getValue().getContent()).isEqualTo("你好");
+    }
+
+    @Test
+    void shouldRejectCreateMessageWhenSessionBelongsToAnotherUser() {
+        ChatSessionDO sessionDO = new ChatSessionDO();
+        sessionDO.setId(10L);
+        sessionDO.setUserId(99L);
+        sessionDO.setStatus(ChatSessionStatusEnum.ACTIVE.getCode());
+        sessionDO.setDeleteFlag(DeleteFlagEnum.NORMAL.getCode());
+        when(chatSessionMapper.selectById(10L)).thenReturn(sessionDO);
+
+        assertThatThrownBy(() -> chatMessageService.createChatMessage(new CreateChatMessageReq()
+                .setSessionId(10L)
+                .setRole("USER")
+                .setContent("你好")
+                .setSequenceNo(1)))
+                .isInstanceOf(ClientException.class)
+                .hasMessage("无权访问该会话");
+        verify(chatMessageMapper, never()).insert(any(ChatMessageDO.class));
     }
 
     @Test
