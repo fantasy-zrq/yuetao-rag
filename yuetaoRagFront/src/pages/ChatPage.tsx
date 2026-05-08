@@ -4,6 +4,8 @@ import ReactMarkdown from "react-markdown";
 import {
   BookOpen,
   Bot,
+  Brain,
+  ChevronDown,
   CircleStop,
   LogOut,
   Menu,
@@ -16,6 +18,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/Button";
+import { ThinkingIndicator } from "@/components/ThinkingIndicator";
 import { useAuthStore } from "@/stores/authStore";
 import { useChatStore } from "@/stores/chatStore";
 import { formatConversationTime } from "@/utils/format";
@@ -30,7 +33,9 @@ export function ChatPage() {
     isLoading,
     isStreaming,
     useStreaming,
+    deepThinkingEnabled,
     setUseStreaming,
+    setDeepThinkingEnabled,
     fetchSessions,
     selectSession,
     startNewSession,
@@ -41,7 +46,24 @@ export function ChatPage() {
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [thinkingExpanded, setThinkingExpanded] = useState<Record<string, boolean>>({});
+  const [thinkingElapsedMs, setThinkingElapsedMs] = useState(0);
+  const thinkingStartRef = useRef<number | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+
+  const hasActiveThinking = messages.some((m) => m.isThinking);
+  useEffect(() => {
+    if (hasActiveThinking) {
+      thinkingStartRef.current = thinkingStartRef.current ?? Date.now();
+      setThinkingElapsedMs(Date.now() - thinkingStartRef.current);
+      const timer = setInterval(() => {
+        setThinkingElapsedMs(Date.now() - (thinkingStartRef.current ?? Date.now()));
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+    thinkingStartRef.current = null;
+    setThinkingElapsedMs(0);
+  }, [hasActiveThinking]);
 
   useEffect(() => {
     fetchSessions();
@@ -63,7 +85,7 @@ export function ChatPage() {
     const node = messageListRef.current;
     if (!node) return;
     node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-  }, [messages.length, messages[messages.length - 1]?.content, isStreaming]);
+  }, [messages.length, messages[messages.length - 1]?.content, messages[messages.length - 1]?.thinking, isStreaming]);
 
   const currentSession = sessions.find((session) => session.id === currentSessionId);
   const filteredSessions = useMemo(() => {
@@ -231,7 +253,46 @@ export function ChatPage() {
             <article key={message.id} className={`message-row ${message.role}`}>
               <div className="message-avatar">{message.role === "assistant" ? <Bot size={18} /> : <UserRound size={18} />}</div>
               <div className="message-bubble">
-                <ReactMarkdown>{message.content || (message.status === "streaming" ? "正在生成..." : "")}</ReactMarkdown>
+                {message.role === "assistant" && message.isThinking ? (
+                  <ThinkingIndicator content={message.thinking} durationMs={thinkingElapsedMs} />
+                ) : null}
+                {message.role === "assistant" && !message.isThinking && message.thinking ? (
+                  <div className="thinking-accordion">
+                    <button
+                      type="button"
+                      className="thinking-accordion-header"
+                      onClick={() =>
+                        setThinkingExpanded((prev) => ({
+                          ...prev,
+                          [message.id]: !prev[message.id]
+                        }))
+                      }
+                    >
+                      <span className="thinking-accordion-icon">
+                        <Brain size={16} />
+                      </span>
+                      <span>深度思考</span>
+                      {message.thinkingDurationMs ? (
+                        <span className="thinking-duration">{Math.round(message.thinkingDurationMs / 1000)}秒</span>
+                      ) : null}
+                      <ChevronDown
+                        size={16}
+                        style={{ transform: thinkingExpanded[message.id] ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}
+                      />
+                    </button>
+                    {thinkingExpanded[message.id] ? (
+                      <div className="thinking-expanded-content">{message.thinking}</div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {message.role === "assistant" && message.status === "streaming" && !message.isThinking && !message.content ? (
+                  <div className="thinking-wait-dots" aria-label="思考中">
+                    <span className="thinking-wait-dot" />
+                    <span className="thinking-wait-dot" />
+                    <span className="thinking-wait-dot" />
+                  </div>
+                ) : null}
+                {message.content ? <ReactMarkdown>{message.content}</ReactMarkdown> : null}
                 {message.citations?.length ? (
                   <div className="citation-list">
                     {message.citations.map((citation) => (
@@ -249,15 +310,31 @@ export function ChatPage() {
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={handleInputKeyDown}
-              placeholder="输入问题，按发送调用后端 RAG..."
+              placeholder={deepThinkingEnabled ? "输入需要深度分析的问题..." : "输入问题，按发送调用后端 RAG..."}
               disabled={isStreaming}
             />
             <div className="chat-input-footer">
-              <label className="stream-toggle">
-                <input type="checkbox" checked={useStreaming} onChange={(event) => setUseStreaming(event.target.checked)} />
-                <span>{useStreaming ? "流式生成" : "普通生成"}</span>
-              </label>
-              <span>Enter 发送 / Shift + Enter 换行</span>
+              <div className="chat-input-controls">
+                <button
+                  type="button"
+                  className={`thinking-toggle ${deepThinkingEnabled ? "active" : ""}`}
+                  onClick={() => setDeepThinkingEnabled(!deepThinkingEnabled)}
+                  disabled={isStreaming}
+                >
+                  <Brain size={14} />
+                  <span>深度思考</span>
+                  {deepThinkingEnabled ? <span className="thinking-dot" /> : null}
+                </button>
+                <label className="stream-toggle">
+                  <input type="checkbox" checked={useStreaming} onChange={(event) => setUseStreaming(event.target.checked)} />
+                  <span>{useStreaming ? "流式生成" : "普通生成"}</span>
+                </label>
+              </div>
+              {deepThinkingEnabled ? (
+                <span className="thinking-hint">深度思考模式已开启，AI将进行更深入的分析推理</span>
+              ) : (
+                <span>Enter 发送 / Shift + Enter 换行</span>
+              )}
             </div>
           </div>
           <Button className="send-btn" type="submit" disabled={isStreaming || !input.trim()}>

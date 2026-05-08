@@ -56,7 +56,7 @@ export async function sendChatMessage(payload: { sessionId: string; userId: stri
 }
 
 export async function streamChatMessage(
-  payload: { sessionId: string; userId: string; message: string; traceId?: string },
+  payload: { sessionId: string; userId: string; message: string; traceId?: string; deepThinking?: boolean },
   handlers: {
     onEvent: (event: ChatStreamEvent) => void;
     onError: (error: Error) => void;

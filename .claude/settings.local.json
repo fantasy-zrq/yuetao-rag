@@ -4,7 +4,21 @@
       "Bash(git:*)",
       "Bash(find:*)",
       "Bash(./mvnw -q -Dmaven.repo.local=/tmp/yuetao-m2 -DskipTests compile)",
-      "Bash(./mvnw:*)"
+      "Bash(./mvnw:*)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Read(//tmp/**)",
+      "Bash(jar tf *)",
+      "Bash(jar xf *)",
+      "Bash(javap -p org/springframework/ai/chat/messages/AbstractMessage.class)",
+      "Bash(javap -p 'org/springframework/ai/openai/api/OpenAiApi$ChatCompletionMessage.class')",
+      "Bash(javap -p org/springframework/ai/openai/OpenAiChatModel.class)",
+      "Bash(javap -p 'org/springframework/ai/openai/api/OpenAiApi$ChatCompletion$Choice.class')",
+      "Bash(javap -c -p org/springframework/ai/openai/OpenAiChatModel.class)",
+      "Bash(javap -p org/springframework/ai/openai/OpenAiChatOptions.class)",
+      "Bash(npm run *)",
+      "Bash(javap -cp /root/.m2/repository/org/springframework/ai/spring-ai-openai/1.1.4/spring-ai-openai-1.1.4.jar -p org.springframework.ai.openai.OpenAiChatOptions)",
+      "Bash(javap -cp /root/.m2/repository/org/springframework/ai/spring-ai-openai/1.1.4/spring-ai-openai-1.1.4.jar -p 'org.springframework.ai.openai.OpenAiChatOptions$Builder')"
     ]
   }
 }

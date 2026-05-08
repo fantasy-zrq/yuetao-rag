@@ -86,6 +86,10 @@ export interface ChatMessage {
   createTime?: string | null;
   status?: "streaming" | "done" | "error";
   citations?: ChatCitation[];
+  thinkingContent?: string | null;
+  thinkingDurationMs?: number | null;
+  isThinking?: boolean;
+  thinking?: string;
 }
 
 export interface ChatResponse {
@@ -101,12 +105,13 @@ export interface ChatResponse {
 }
 
 export interface ChatStreamEvent {
-  event: "message_start" | "delta" | "citation" | "reset" | "message_end" | "error" | string;
+  event: "message_start" | "delta" | "thinking_delta" | "citation" | "reset" | "message_end" | "error" | string;
   traceId?: string;
   sessionId?: string;
   candidateId?: string;
   attemptNo?: number;
   content?: string;
+  type?: string;
   reason?: string;
   code?: string;
   message?: string;

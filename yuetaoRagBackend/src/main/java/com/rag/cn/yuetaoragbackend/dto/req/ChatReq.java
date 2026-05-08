@@ -30,4 +30,9 @@ public class ChatReq {
      * 可选的链路追踪ID。
      */
     private String traceId;
+
+    /**
+     * 是否开启深度思考。
+     */
+    private Boolean deepThinking;
 }

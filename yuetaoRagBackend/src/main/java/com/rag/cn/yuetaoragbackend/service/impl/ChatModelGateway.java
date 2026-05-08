@@ -14,6 +14,7 @@ import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Service;
@@ -88,6 +89,15 @@ public class ChatModelGateway {
                 .toList();
     }
 
+    public List<String> thinkingCandidateIds() {
+        List<String> thinkingModelIds = aiProperties.getChat().getCandidates().stream()
+                .filter(each -> Boolean.TRUE.equals(each.getSupportsThinking()) && Boolean.TRUE.equals(each.getEnabled()))
+                .map(AiProperties.ChatCandidateProperties::getId)
+                .toList();
+        List<String> available = streamingCandidateIds();
+        return thinkingModelIds.stream().filter(available::contains).toList();
+    }
+
     public boolean tryAcquireStreamingCandidate(String candidateId) {
         return candidateById(candidateId).tryAcquire(aiProperties.getCircuitBreaker());
     }
@@ -122,6 +132,26 @@ public class ChatModelGateway {
                 "rewritten_question", safeText(rewrittenQuery),
                 "retrieved_knowledge", renderCitations(citations)));
         return streamByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
+    }
+
+    public Flux<StreamContent> streamThinkingChitchatByCandidate(String candidateId, String question,
+                                                                  List<String> recentMessages) {
+        String prompt = renderPrompt("prompt/answer-chat-system.st", Map.of(
+                "history", renderHistory(recentMessages),
+                "question", safeText(question),
+                "retrieved_knowledge", "无"));
+        return streamThinkingByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
+    }
+
+    public Flux<StreamContent> streamThinkingKnowledgeAnswerByCandidate(String candidateId, String originalQuestion,
+                                                                        String rewrittenQuery, List<String> recentMessages,
+                                                                        List<RagRetrievalService.RetrievedChunk> citations) {
+        String prompt = renderPrompt("prompt/answer-chat-kb.st", Map.of(
+                "history", renderHistory(recentMessages),
+                "question", safeText(originalQuestion),
+                "rewritten_question", safeText(rewrittenQuery),
+                "retrieved_knowledge", renderCitations(citations)));
+        return streamThinkingByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
     }
 
     private String chatCompletion(String systemPrompt, List<Map<String, String>> messages) {
@@ -252,6 +282,37 @@ public class ChatModelGateway {
         return candidateById(candidateId).chatModel().stream(prompt)
                 .map(this::extractStreamText)
                 .filter(StringUtils::hasText);
+    }
+
+    private Flux<StreamContent> streamThinkingByCandidate(String candidateId, Prompt prompt) {
+        OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder();
+        Map<String, Object> extraBody = aiProperties.getChat().getCandidates().stream()
+                .filter(c -> Objects.equals(c.getId(), candidateId))
+                .findFirst()
+                .map(AiProperties.ChatCandidateProperties::getThinkingExtraBody)
+                .orElse(Map.of());
+        if (!extraBody.isEmpty()) {
+            builder.extraBody(extraBody);
+        } else {
+            builder.reasoningEffort("medium");
+        }
+        Prompt thinkingPrompt = new Prompt(prompt.getInstructions(), builder.build());
+        return candidateById(candidateId).chatModel().stream(thinkingPrompt)
+                .map(this::extractStreamContent)
+                .filter(sc -> sc.hasThinking() || sc.hasContent());
+    }
+
+    private StreamContent extractStreamContent(ChatResponse response) {
+        if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
+            return new StreamContent(null, null);
+        }
+        String reasoning = null;
+        Object reasoningObj = response.getResult().getOutput().getMetadata().get("reasoningContent");
+        if (reasoningObj instanceof String rs && StringUtils.hasText(rs)) {
+            reasoning = rs;
+        }
+        String content = response.getResult().getOutput().getText();
+        return new StreamContent(reasoning, content);
     }
 
     private String extractStreamText(ChatResponse response) {

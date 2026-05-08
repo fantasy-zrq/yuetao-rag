@@ -19,7 +19,10 @@ interface ChatState {
   isLoading: boolean;
   isStreaming: boolean;
   useStreaming: boolean;
+  deepThinkingEnabled: boolean;
+  thinkingStartAt: number | null;
   setUseStreaming: (value: boolean) => void;
+  setDeepThinkingEnabled: (value: boolean) => void;
   fetchSessions: () => Promise<void>;
   startNewSession: () => void;
   selectSession: (sessionId: string) => Promise<void>;
@@ -53,7 +56,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   isLoading: false,
   isStreaming: false,
   useStreaming: true,
+  deepThinkingEnabled: false,
+  thinkingStartAt: null,
   setUseStreaming: (value) => set({ useStreaming: value }),
+  setDeepThinkingEnabled: (value) => set({ deepThinkingEnabled: value }),
   fetchSessions: async () => {
     const userId = currentUserId();
     if (!userId) return;
@@ -78,7 +84,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
         messages: messages.map((message) => ({
           ...message,
           role: String(message.role).toLowerCase() === "assistant" ? "assistant" : "user",
-          status: "done"
+          status: "done",
+          thinking: message.thinkingContent || undefined,
+          isThinking: false
         }))
       });
     } catch (error) {
@@ -106,6 +114,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const userId = currentUserId();
     if (!trimmed || !userId || get().isStreaming) return;
 
+    const deepThinking = get().deepThinkingEnabled;
     let sessionId = get().currentSessionId;
     try {
       if (!sessionId) {
@@ -136,13 +145,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
         content: "",
         status: "streaming",
         citations: [],
+        thinking: deepThinking ? "" : undefined,
+        isThinking: deepThinking,
         createTime: new Date().toISOString()
       };
 
       set((state) => ({
         messages: [...state.messages, userMessage, assistantMessage],
         sessions: touchSession(state.sessions, activeSessionId),
-        isStreaming: true
+        isStreaming: true,
+        thinkingStartAt: null
       }));
 
       if (!get().useStreaming) {
@@ -167,15 +179,41 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       await streamChatMessage(
-        { sessionId: activeSessionId, userId, message: trimmed },
+        { sessionId: activeSessionId, userId, message: trimmed, deepThinking: deepThinking || undefined },
         {
           onEvent: (event) => {
-            if (event.event === "delta" && event.content) {
+            if (event.event === "thinking_delta" && event.content) {
               set((state) => ({
+                thinkingStartAt: state.thinkingStartAt ?? Date.now(),
                 messages: state.messages.map((message) =>
-                  message.id === assistantId ? { ...message, content: message.content + event.content } : message
+                  message.id === assistantId
+                    ? { ...message, thinking: (message.thinking ?? "") + event.content, isThinking: true }
+                    : message
                 )
               }));
+            }
+            if (event.event === "delta" && event.content) {
+              set((state) => {
+                const shouldFinalize = state.thinkingStartAt != null;
+                const duration = shouldFinalize
+                  ? Math.max(1, Math.round((Date.now() - (state.thinkingStartAt as number)) / 1000))
+                  : undefined;
+                return {
+                  thinkingStartAt: shouldFinalize ? null : state.thinkingStartAt,
+                  messages: state.messages.map((message) =>
+                    message.id === assistantId
+                      ? {
+                          ...message,
+                          content: message.content + event.content,
+                          isThinking: shouldFinalize ? false : message.isThinking,
+                          thinkingDurationMs: shouldFinalize && !message.thinkingDurationMs
+                            ? (duration ?? 0) * 1000
+                            : message.thinkingDurationMs
+                        }
+                      : message
+                  )
+                };
+              });
             }
             if (event.event === "citation" && event.citations) {
               set((state) => ({
@@ -189,10 +227,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
             if (event.event === "message_end") {
               set((state) => ({
                 isStreaming: false,
+                thinkingStartAt: null,
                 sessions: touchSession(state.sessions, event.sessionId || activeSessionId),
                 messages: state.messages.map((message) =>
                   message.id === assistantId
-                    ? { ...message, id: event.assistantMessageId || message.id, status: "done" }
+                    ? {
+                        ...message,
+                        id: event.assistantMessageId || message.id,
+                        status: "done",
+                        isThinking: false,
+                        thinkingDurationMs: message.thinkingDurationMs ?? (state.thinkingStartAt
+                          ? Math.max(1, Math.round((Date.now() - state.thinkingStartAt) / 1000)) * 1000
+                          : undefined)
+                      }
                     : message
                 )
               }));
@@ -204,8 +251,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
           onError: (error) => {
             set((state) => ({
               isStreaming: false,
+              thinkingStartAt: null,
               messages: state.messages.map((message) =>
-                message.id === assistantId ? { ...message, status: "error", content: message.content || error.message } : message
+                message.id === assistantId
+                  ? {
+                      ...message,
+                      status: "error",
+                      content: message.content || error.message,
+                      isThinking: false,
+                      thinkingDurationMs: message.thinkingDurationMs ?? (state.thinkingStartAt
+                        ? Math.max(1, Math.round((Date.now() - state.thinkingStartAt) / 1000)) * 1000
+                        : undefined)
+                    }
+                  : message
               )
             }));
             toast.error(error.message);

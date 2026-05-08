@@ -80,12 +80,17 @@ app:
           supports-thinking: true
           streaming-enabled: true
           priority: 100
+          thinking-extra-body:
+            enable_thinking: true
         - id: deepseek-v3.2
           provider: bailian
           enabled: true
           model: deepseek-v3.2
+          supports-thinking: true
           streaming-enabled: true
           priority: 80
+          thinking-extra-body:
+            enable_thinking: true
         - id: glm-4.7
           provider: siliconflow
           enabled: true
@@ -93,6 +98,8 @@ app:
           supports-thinking: true
           streaming-enabled: true
           priority: 60
+          thinking-extra-body:
+            enable_thinking: true
     embedding:
       default-model: text-embedding-v4
       candidates:

@@ -29,4 +29,10 @@ public class ChatMessageListResp {
 
     /** 创建时间。 */
     private Date createTime;
+
+    /** 思考内容。 */
+    private String thinkingContent;
+
+    /** 思考耗时（毫秒）。 */
+    private Long thinkingDurationMs;
 }

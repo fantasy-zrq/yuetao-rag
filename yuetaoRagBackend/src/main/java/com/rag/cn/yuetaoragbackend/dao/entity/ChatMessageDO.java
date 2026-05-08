@@ -42,4 +42,10 @@ public class ChatMessageDO extends BaseDO {
 
     /** 模型名称。 */
     private String modelName;
+
+    /** 思考内容。 */
+    private String thinkingContent;
+
+    /** 思考耗时（毫秒）。 */
+    private Long thinkingDurationMs;
 }

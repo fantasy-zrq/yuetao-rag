@@ -255,8 +255,21 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "INTENT",
                     "SUCCESS", elapsedMillis(intentStart), "intent=" + intentType);
 
+            boolean deepThinking = Boolean.TRUE.equals(requestParam.getDeepThinking());
+
             if ("CHITCHAT".equals(intentType)) {
                 persistUserMessage(requestParam, traceId, nextSequenceNo);
+                if (deepThinking) {
+                    return streamThinkingByCandidates(
+                            traceId,
+                            requestParam.getSessionId(),
+                            requestParam.getUserId(),
+                            nextSequenceNo + 1,
+                            requestParam.getMessage(),
+                            List.of(),
+                            chatModelGateway.thinkingCandidateIds(),
+                            (candidateId, ignored) -> chatModelGateway.streamThinkingChitchatByCandidate(candidateId, requestParam.getMessage(), historyTexts));
+                }
                 return streamByCandidates(
                         traceId,
                         requestParam.getSessionId(),
@@ -293,6 +306,22 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             }
 
             persistUserMessage(requestParam, traceId, nextSequenceNo);
+            if (deepThinking) {
+                return streamThinkingByCandidates(
+                        traceId,
+                        requestParam.getSessionId(),
+                        requestParam.getUserId(),
+                        nextSequenceNo + 1,
+                        requestParam.getMessage(),
+                        toStreamCitationResponses(rerankedChunks),
+                        chatModelGateway.thinkingCandidateIds(),
+                        (candidateId, ignored) -> chatModelGateway.streamThinkingKnowledgeAnswerByCandidate(
+                                candidateId,
+                                requestParam.getMessage(),
+                                rewrittenQuery,
+                                historyTexts,
+                                rerankedChunks));
+            }
             return streamByCandidates(
                     traceId,
                     requestParam.getSessionId(),
@@ -607,6 +636,122 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return attemptFlux;
     }
 
+    private Flux<ChatStreamEventResp> streamThinkingByCandidates(String traceId, Long sessionId, Long userId,
+                                                                 int assistantSequenceNo, String question,
+                                                                 List<ChatStreamCitationResp> citations,
+                                                                 List<String> candidateIds,
+                                                                 CandidateThinkingStreamProvider streamProvider) {
+        if (candidateIds == null || candidateIds.isEmpty()) {
+            return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
+                    BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的深度思考模型候选"));
+        }
+        long generationStart = System.nanoTime();
+        return streamThinkingByCandidate(traceId, sessionId, userId, assistantSequenceNo, question, citations,
+                candidateIds, 0, 1, generationStart, streamProvider);
+    }
+
+    private Flux<ChatStreamEventResp> streamThinkingByCandidate(String traceId, Long sessionId, Long userId,
+                                                                int assistantSequenceNo, String question,
+                                                                List<ChatStreamCitationResp> citations,
+                                                                List<String> candidateIds, int index, int attemptNo,
+                                                                long generationStartNanos,
+                                                                CandidateThinkingStreamProvider streamProvider) {
+        if (index >= candidateIds.size()) {
+            writeTrace(traceId, sessionId, userId, "GENERATE", "FAILED", elapsedMillis(generationStartNanos), "all-thinking-candidates-exhausted");
+            return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
+                    BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的深度思考模型候选"));
+        }
+        String candidateId = candidateIds.get(index);
+        long attemptStart = System.nanoTime();
+        if (!chatModelGateway.tryAcquireStreamingCandidate(candidateId)) {
+            writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
+                    "SKIPPED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=skipped-circuit-open");
+            return streamThinkingByCandidate(traceId, sessionId, userId, assistantSequenceNo, question,
+                    citations, candidateIds, index + 1, attemptNo, generationStartNanos, streamProvider);
+        }
+
+        AtomicBoolean sawDelta = new AtomicBoolean(false);
+        AtomicBoolean messageStarted = new AtomicBoolean(false);
+        StringBuilder answerBuilder = new StringBuilder();
+        StringBuilder thinkingBuilder = new StringBuilder();
+        AtomicReference<Long> thinkingStartNanos = new AtomicReference<>();
+
+        Flux<StreamContent> contentFlux = applyThinkingStreamTimeouts(streamProvider.stream(candidateId, question));
+        Flux<ChatStreamEventResp> attemptFlux = contentFlux.concatMap(sc -> {
+                    List<ChatStreamEventResp> events = new java.util.ArrayList<>();
+                    if (sc.hasThinking()) {
+                        if (thinkingStartNanos.get() == null) {
+                            thinkingStartNanos.set(System.nanoTime());
+                        }
+                        thinkingBuilder.append(sc.thinking());
+                        events.add(ChatStreamEventResp.thinkingDelta(traceId, sessionId, sc.thinking()));
+                    }
+                    if (sc.hasContent()) {
+                        sawDelta.set(true);
+                        answerBuilder.append(sc.content());
+                        if (messageStarted.compareAndSet(false, true)) {
+                            events.add(ChatStreamEventResp.messageStart(traceId, sessionId, candidateId, attemptNo));
+                        }
+                        events.add(ChatStreamEventResp.delta(traceId, sessionId, sc.content()));
+                    }
+                    return Flux.fromIterable(events);
+                })
+                .concatWith(Flux.defer(() -> {
+                    if (!sawDelta.get()) {
+                        return Flux.error(new IllegalStateException("聊天模型流式返回为空"));
+                    }
+                    chatModelGateway.markStreamingCandidateSuccess(candidateId);
+                    ChatModelInfoRecord modelInfo = chatModelGateway.candidateInfo(candidateId);
+                    Long thinkingDurationMs = thinkingStartNanos.get() == null ? null
+                            : Math.max(1L, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - thinkingStartNanos.get()));
+                    ChatMessageDO assistantMessage = persistAssistantMessage(
+                            sessionId, userId, assistantSequenceNo, traceId,
+                            answerBuilder.toString(), modelInfo,
+                            thinkingBuilder.toString(), thinkingDurationMs);
+                    updateSessionLastActiveAt(sessionId);
+                    writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
+                            "SUCCESS", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",attemptNo=" + attemptNo + ",thinking=" + (thinkingDurationMs != null));
+                    Flux<ChatStreamEventResp> citationFlux = citations == null || citations.isEmpty()
+                            ? Flux.empty()
+                            : Flux.just(ChatStreamEventResp.citation(traceId, sessionId, citations));
+                    return citationFlux.concatWithValues(ChatStreamEventResp.messageEnd(traceId, sessionId, assistantMessage.getId()));
+                }))
+                .onErrorResume(ex -> {
+                    chatModelGateway.markStreamingCandidateFailure(candidateId);
+                    String reason = resolveStreamFailureReason(ex, sawDelta.get());
+                    writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
+                            "FAILED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=" + reason);
+                    Flux<ChatStreamEventResp> nextFlux = streamThinkingByCandidate(traceId, sessionId, userId, assistantSequenceNo,
+                            question, citations, candidateIds, index + 1, attemptNo + 1, generationStartNanos, streamProvider);
+                    if (sawDelta.get()) {
+                        return Flux.just(ChatStreamEventResp.reset(traceId, sessionId, candidateId, reason))
+                                .concatWith(nextFlux);
+                    }
+                    return nextFlux;
+                });
+        return attemptFlux;
+    }
+
+    private Flux<StreamContent> applyThinkingStreamTimeouts(Flux<StreamContent> source) {
+        Integer firstTokenTimeoutMillis = aiProperties.getCircuitBreaker().getFirstTokenTimeoutMillis();
+        Integer streamChunkIdleTimeoutMillis = aiProperties.getCircuitBreaker().getStreamChunkIdleTimeoutMillis();
+        if ((firstTokenTimeoutMillis == null || firstTokenTimeoutMillis <= 0)
+                && (streamChunkIdleTimeoutMillis == null || streamChunkIdleTimeoutMillis <= 0)) {
+            return source;
+        }
+        Mono<Long> firstTimeout = firstTokenTimeoutMillis != null && firstTokenTimeoutMillis > 0
+                ? Mono.delay(Duration.ofMillis(firstTokenTimeoutMillis))
+                : Mono.never();
+        if (firstTokenTimeoutMillis != null && firstTokenTimeoutMillis > 0
+                && streamChunkIdleTimeoutMillis != null && streamChunkIdleTimeoutMillis > 0) {
+            return source.timeout(firstTimeout, ignored -> Mono.delay(Duration.ofMillis(streamChunkIdleTimeoutMillis)));
+        }
+        if (firstTokenTimeoutMillis != null && firstTokenTimeoutMillis > 0) {
+            return source.timeout(firstTimeout, ignored -> Mono.never());
+        }
+        return source.timeout(Mono.never(), ignored -> Mono.delay(Duration.ofMillis(streamChunkIdleTimeoutMillis)));
+    }
+
     private Flux<String> applyStreamTimeouts(Flux<String> source) {
         Integer firstTokenTimeoutMillis = aiProperties.getCircuitBreaker().getFirstTokenTimeoutMillis();
         Integer streamChunkIdleTimeoutMillis = aiProperties.getCircuitBreaker().getStreamChunkIdleTimeoutMillis();
@@ -629,6 +774,12 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
     private ChatMessageDO persistAssistantMessage(Long sessionId, Long userId, int sequenceNo, String traceId,
                                                   String answer, ChatModelInfoRecord modelInfo) {
+        return persistAssistantMessage(sessionId, userId, sequenceNo, traceId, answer, modelInfo, null, null);
+    }
+
+    private ChatMessageDO persistAssistantMessage(Long sessionId, Long userId, int sequenceNo, String traceId,
+                                                  String answer, ChatModelInfoRecord modelInfo,
+                                                  String thinkingContent, Long thinkingDurationMs) {
         ChatMessageDO assistantMessage = new ChatMessageDO()
                 .setSessionId(sessionId)
                 .setUserId(userId)
@@ -638,7 +789,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .setSequenceNo(sequenceNo)
                 .setTraceId(traceId)
                 .setModelProvider(modelInfo == null ? null : modelInfo.provider())
-                .setModelName(modelInfo == null ? null : modelInfo.modelName());
+                .setModelName(modelInfo == null ? null : modelInfo.modelName())
+                .setThinkingContent(thinkingContent)
+                .setThinkingDurationMs(thinkingDurationMs);
         chatMessageMapper.insert(assistantMessage);
         return assistantMessage;
     }
@@ -687,11 +840,5 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             return text;
         }
         return text.substring(0, maxLength);
-    }
-
-    @FunctionalInterface
-    private interface CandidateStreamProvider {
-
-        Flux<String> stream(String candidateId, String question);
     }
 }

@@ -13,6 +13,7 @@ public enum ChatStreamEventTypeEnum {
 
     MESSAGE_START("message_start"),
     DELTA("delta"),
+    THINKING_DELTA("thinking_delta"),
     CITATION("citation"),
     RESET("reset"),
     MESSAGE_END("message_end"),

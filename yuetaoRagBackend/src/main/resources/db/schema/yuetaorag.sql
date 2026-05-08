@@ -13,6 +13,8 @@ CREATE TABLE "public"."t_chat_message" (
     "trace_id" varchar(128),
     "model_provider" varchar(64),
     "model_name" varchar(128),
+    "thinking_content" text,
+    "thinking_duration_ms" int8,
     "create_time" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "update_time" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "delete_flag" int2 NOT NULL DEFAULT 0,

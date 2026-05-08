@@ -1730,6 +1730,228 @@ tr:last-child td {
   display: none;
 }
 
+/* Deep thinking styles */
+.thinking-indicator {
+  background: #DBEAFE;
+  border: 1px solid #BFDBFE;
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-bottom: 8px;
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #2563EB;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.thinking-spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.thinking-duration-badge {
+  font-size: 12px;
+  color: #2563EB;
+  background: #BFDBFE;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.thinking-body {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: #1E40AF;
+}
+
+.thinking-body-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #2563EB;
+}
+
+.thinking-body-text {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+
+.thinking-cursor-bar {
+  display: inline-block;
+  width: 6px;
+  height: 16px;
+  background: #3B82F6;
+  vertical-align: middle;
+  margin-left: 2px;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.thinking-accordion {
+  margin-bottom: 8px;
+  border: 1px solid #BFDBFE;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #DBEAFE;
+}
+
+.thinking-accordion-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 16px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  color: #2563EB;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+
+.thinking-accordion-header:hover {
+  background: rgba(191, 219, 254, 0.3);
+}
+
+.thinking-accordion-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: #BFDBFE;
+  flex-shrink: 0;
+}
+
+.thinking-duration {
+  font-size: 12px;
+  color: #2563EB;
+  background: #BFDBFE;
+  padding: 2px 8px;
+  border-radius: 999px;
+  margin-left: auto;
+}
+
+.thinking-expanded-content {
+  padding: 0 16px 16px;
+  font-size: 13px;
+  color: #1E40AF;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  border-top: 1px solid #BFDBFE;
+}
+
+.thinking-expanded-content > *:first-child {
+  margin-top: 12px;
+}
+
+.thinking-wait-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 14px;
+  padding: 8px 0;
+}
+
+.thinking-wait-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ccc;
+  animation: wait-bounce 1.2s ease-in-out infinite;
+}
+
+.thinking-wait-dot:nth-child(2) { animation-delay: 0.15s; }
+.thinking-wait-dot:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes wait-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.6; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+
+.thinking-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  transition: all 0.15s;
+}
+
+.thinking-toggle:hover {
+  border-color: #BFDBFE;
+  color: #2563EB;
+}
+
+.thinking-toggle.active {
+  background: #DBEAFE;
+  border-color: #BFDBFE;
+  color: #2563EB;
+}
+
+.thinking-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #3B82F6;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.thinking-hint {
+  color: #2563EB;
+  font-size: 12px;
+}
+
+.chat-input-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stream-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.stream-toggle input {
+  accent-color: var(--accent-primary);
+}
+
 @media (max-width: 920px) {
   body {
     overflow: auto;

@@ -151,6 +151,12 @@ public class AiProperties {
          * 候选模型优先级，数值越大优先级越高。
          */
         private Integer priority;
+
+        /**
+         * 深度思考模式下传递给模型的额外请求体参数。
+         * 例如 Dashscope 的 Qwen 模型需要 {"enable_thinking": true}。
+         */
+        private Map<String, Object> thinkingExtraBody = new LinkedHashMap<>();
     }
 
     /**

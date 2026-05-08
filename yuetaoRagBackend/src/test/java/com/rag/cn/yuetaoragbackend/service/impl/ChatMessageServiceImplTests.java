@@ -2,6 +2,7 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -262,6 +263,167 @@ class ChatMessageServiceImplTests {
         assertThat(captor.getAllValues())
                 .extracting(QaTraceLogDO::getLatencyMs)
                 .allMatch(value -> value != null && value > 0);
+    }
+
+    @Test
+    void shouldStreamThinkingDeltaEventsForDeepThinkingChitchat() {
+        when(chatSessionMapper.selectById(10L)).thenReturn(session());
+        when(userMapper.selectById(20L)).thenReturn(user());
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("qwen-thinking"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("qwen-thinking")).thenReturn(true);
+        when(chatModelGateway.streamThinkingChitchatByCandidate("qwen-thinking", "你好", List.of()))
+                .thenReturn(Flux.just(
+                        new StreamContent("让我想想...", null),
+                        new StreamContent(null, "你好！"),
+                        new StreamContent(null, "有什么可以帮你？")
+                ));
+        when(chatModelGateway.candidateInfo("qwen-thinking")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setUserId(20L)
+                        .setMessage("你好")
+                        .setDeepThinking(true)
+                        .setTraceId("trace-thinking"))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsExactly("thinking_delta", "message_start", "delta", "delta", "message_end");
+        assertThat(events.get(0).getType()).isEqualTo("think");
+        assertThat(events.get(0).getContent()).isEqualTo("让我想想...");
+        assertThat(events.get(1).getType()).isNull(); // message_start has no type
+        assertThat(events.get(2).getType()).isEqualTo("response");
+        assertThat(events.get(2).getContent()).isEqualTo("你好！");
+    }
+
+    @Test
+    void shouldStreamThinkingWithKnowledgeCitations() {
+        when(chatSessionMapper.selectById(10L)).thenReturn(session());
+        when(userMapper.selectById(20L)).thenReturn(user());
+        when(chatModelGateway.classifyQuestionIntent("退货规则", List.of())).thenReturn("KB_QA");
+        when(chatModelGateway.rewriteQuestion("退货规则", List.of())).thenReturn("退货规则");
+        List<RagRetrievalService.RetrievedChunk> recalledChunks = List.of(
+                new RagRetrievalService.RetrievedChunk(101L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0D, 0D));
+        List<RagRetrievalService.RetrievedChunk> rerankedChunks = List.of(
+                new RagRetrievalService.RetrievedChunk(101L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0.50D, 0.71D));
+        when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(recalledChunks);
+        when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(rerankedChunks);
+        when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("qwen-thinking"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("qwen-thinking")).thenReturn(true);
+        when(chatModelGateway.streamThinkingKnowledgeAnswerByCandidate(
+                eq("qwen-thinking"), eq("退货规则"), eq("退货规则"), any(List.class), any(List.class)))
+                .thenReturn(Flux.just(
+                        new StreamContent("分析知识库...", null),
+                        new StreamContent(null, "根据政策[1]，支持7天退货。")
+                ));
+        when(chatModelGateway.candidateInfo("qwen-thinking")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setUserId(20L)
+                        .setMessage("退货规则")
+                        .setDeepThinking(true)
+                        .setTraceId("trace-kb"))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsExactly("thinking_delta", "message_start", "delta", "citation", "message_end");
+        assertThat(events.get(0).getContent()).isEqualTo("分析知识库...");
+        assertThat(events.get(3).getCitations()).hasSize(1);
+    }
+
+    @Test
+    void shouldPersistThinkingContentAndDuration() {
+        when(chatSessionMapper.selectById(10L)).thenReturn(session());
+        when(userMapper.selectById(20L)).thenReturn(user());
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("qwen-thinking"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("qwen-thinking")).thenReturn(true);
+        when(chatModelGateway.streamThinkingChitchatByCandidate("qwen-thinking", "你好", List.of()))
+                .thenReturn(Flux.just(
+                        new StreamContent("思考中...", null),
+                        new StreamContent(null, "你好！")
+                ));
+        when(chatModelGateway.candidateInfo("qwen-thinking")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setUserId(20L)
+                        .setMessage("你好")
+                        .setDeepThinking(true))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        ArgumentCaptor<ChatMessageDO> messageCaptor = ArgumentCaptor.forClass(ChatMessageDO.class);
+        verify(chatMessageMapper, times(2)).insert(messageCaptor.capture());
+        ChatMessageDO assistantMessage = messageCaptor.getAllValues().get(1);
+        assertThat(assistantMessage.getThinkingContent()).isEqualTo("思考中...");
+        assertThat(assistantMessage.getThinkingDurationMs()).isNotNull();
+        assertThat(assistantMessage.getThinkingDurationMs()).isGreaterThan(0);
+        assertThat(assistantMessage.getContent()).isEqualTo("你好！");
+    }
+
+    @Test
+    void shouldBuildThinkingDeltaEventPayload() {
+        ChatStreamEventResp event = ChatStreamEventResp.thinkingDelta("trace-1", 10L, "让我分析...");
+
+        assertThat(event.getEvent()).isEqualTo("thinking_delta");
+        assertThat(event.getTraceId()).isEqualTo("trace-1");
+        assertThat(event.getSessionId()).isEqualTo(10L);
+        assertThat(event.getContent()).isEqualTo("让我分析...");
+        assertThat(event.getType()).isEqualTo("think");
+    }
+
+    @Test
+    void shouldFallbackWhenNoThinkingCandidatesAvailable() {
+        when(chatSessionMapper.selectById(10L)).thenReturn(session());
+        when(userMapper.selectById(20L)).thenReturn(user());
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of());
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setUserId(20L)
+                        .setMessage("你好")
+                        .setDeepThinking(true))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsExactly("error");
+        assertThat(events.get(0).getMessage()).contains("深度思考模型");
+    }
+
+    @Test
+    void shouldFailoverToNextThinkingCandidateOnError() {
+        when(chatSessionMapper.selectById(10L)).thenReturn(session());
+        when(userMapper.selectById(20L)).thenReturn(user());
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("candidate-a", "candidate-b"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
+        when(chatModelGateway.tryAcquireStreamingCandidate("candidate-b")).thenReturn(true);
+        when(chatModelGateway.streamThinkingChitchatByCandidate("candidate-a", "你好", List.of()))
+                .thenReturn(Flux.error(new RuntimeException("model-error")));
+        when(chatModelGateway.streamThinkingChitchatByCandidate("candidate-b", "你好", List.of()))
+                .thenReturn(Flux.just(
+                        new StreamContent("思考...", null),
+                        new StreamContent(null, "你好！")
+                ));
+        when(chatModelGateway.candidateInfo("candidate-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setUserId(20L)
+                        .setMessage("你好")
+                        .setDeepThinking(true))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsExactly("thinking_delta", "message_start", "delta", "message_end");
     }
 
     @Test
