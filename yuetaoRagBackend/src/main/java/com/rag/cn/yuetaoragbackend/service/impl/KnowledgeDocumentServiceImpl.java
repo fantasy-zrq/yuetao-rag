@@ -242,7 +242,9 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
 
     @Override
     public KnowledgeDocumentDetailResp getKnowledgeDocument(Long id) {
-        KnowledgeDocumentDO documentDO = knowledgeDocumentMapper.selectById(id);
+        KnowledgeDocumentDO documentDO = knowledgeDocumentMapper.selectOne(Wrappers.<KnowledgeDocumentDO>lambdaQuery()
+                .eq(KnowledgeDocumentDO::getId, id)
+                .eq(KnowledgeDocumentDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
         if (documentDO == null) {
             return null;
         }

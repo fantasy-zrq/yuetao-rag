@@ -62,7 +62,9 @@ public class ChatSessionServiceImpl extends ServiceImpl<ChatSessionMapper, ChatS
 
     @Override
     public ChatSessionDetailResp getChatSession(Long id) {
-        ChatSessionDO sessionDO = chatSessionMapper.selectById(id);
+        ChatSessionDO sessionDO = chatSessionMapper.selectOne(Wrappers.<ChatSessionDO>lambdaQuery()
+                .eq(ChatSessionDO::getId, id)
+                .eq(ChatSessionDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
         if (sessionDO == null) {
             return null;
         }

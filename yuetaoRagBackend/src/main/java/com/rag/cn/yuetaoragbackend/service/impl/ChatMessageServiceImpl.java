@@ -437,7 +437,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
     @Override
     public ChatMessageDetailResp getChatMessage(Long id) {
-        ChatMessageDO messageDO = chatMessageMapper.selectById(id);
+        ChatMessageDO messageDO = chatMessageMapper.selectOne(Wrappers.<ChatMessageDO>lambdaQuery()
+                .eq(ChatMessageDO::getId, id)
+                .eq(ChatMessageDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
         if (messageDO == null) {
             return null;
         }
@@ -447,8 +449,10 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     }
 
     private ChatSessionDO requireSession(Long sessionId, Long userId) {
-        ChatSessionDO sessionDO = chatSessionMapper.selectById(sessionId);
-        if (sessionDO == null || !DeleteFlagEnum.NORMAL.getCode().equals(sessionDO.getDeleteFlag())) {
+        ChatSessionDO sessionDO = chatSessionMapper.selectOne(Wrappers.<ChatSessionDO>lambdaQuery()
+                .eq(ChatSessionDO::getId, sessionId)
+                .eq(ChatSessionDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
+        if (sessionDO == null) {
             throw new ClientException("会话不存在");
         }
         if (!userId.equals(sessionDO.getUserId())) {
@@ -461,8 +465,10 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     }
 
     private ChatSessionDO requireSessionForCreate(Long sessionId, Long userId) {
-        ChatSessionDO sessionDO = chatSessionMapper.selectById(sessionId);
-        if (sessionDO == null || !DeleteFlagEnum.NORMAL.getCode().equals(sessionDO.getDeleteFlag())) {
+        ChatSessionDO sessionDO = chatSessionMapper.selectOne(Wrappers.<ChatSessionDO>lambdaQuery()
+                .eq(ChatSessionDO::getId, sessionId)
+                .eq(ChatSessionDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
+        if (sessionDO == null) {
             throw new ClientException("会话不存在");
         }
         if (!userId.equals(sessionDO.getUserId())) {
@@ -479,8 +485,10 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     }
 
     private UserDO requireUser(Long userId) {
-        UserDO userDO = userMapper.selectById(userId);
-        if (userDO == null || !DeleteFlagEnum.NORMAL.getCode().equals(userDO.getDeleteFlag())) {
+        UserDO userDO = userMapper.selectOne(Wrappers.<UserDO>lambdaQuery()
+                .eq(UserDO::getId, userId)
+                .eq(UserDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
+        if (userDO == null) {
             throw new ClientException("用户不存在");
         }
         return userDO;

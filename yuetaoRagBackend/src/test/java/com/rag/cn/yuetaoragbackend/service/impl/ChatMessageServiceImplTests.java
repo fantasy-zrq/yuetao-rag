@@ -105,6 +105,8 @@ class ChatMessageServiceImplTests {
                 traceProperties,
                 aiProperties,
                 chatStreamExecutor);
+        lenient().when(chatSessionMapper.selectOne(any())).thenReturn(session());
+        lenient().when(userMapper.selectOne(any())).thenReturn(user());
         UserContext.set(LoginUser.builder().userId("20").build());
     }
 
@@ -115,8 +117,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldChatWithoutKnowledgeRetrievalForChitchatIntent() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.generateChitchatAnswer("你好", List.of()))
                 .thenReturn("你好，请问有什么可以帮你？");
@@ -137,8 +137,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldChatWithKnowledgeCitationsForKnowledgeIntent() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("商品退货规则是什么", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("商品退货规则是什么", List.of())).thenReturn("商品退货规则");
         List<RagRetrievalService.RetrievedChunk> recalledChunks = List.of(
@@ -168,8 +166,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldRefuseAnswerWhenRerankResultsEmpty() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("报销流程是什么", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("报销流程是什么", List.of())).thenReturn("报销流程");
         when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(List.of());
@@ -189,9 +185,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldCreateMessageForCurrentUser() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
-
         chatMessageService.createChatMessage(new CreateChatMessageReq()
                 .setSessionId(10L)
                 .setRole("USER")
@@ -212,7 +205,7 @@ class ChatMessageServiceImplTests {
         sessionDO.setUserId(99L);
         sessionDO.setStatus(ChatSessionStatusEnum.ACTIVE.getCode());
         sessionDO.setDeleteFlag(DeleteFlagEnum.NORMAL.getCode());
-        when(chatSessionMapper.selectById(10L)).thenReturn(sessionDO);
+        when(chatSessionMapper.selectOne(any())).thenReturn(sessionDO);
 
         assertThatThrownBy(() -> chatMessageService.createChatMessage(new CreateChatMessageReq()
                 .setSessionId(10L)
@@ -222,6 +215,11 @@ class ChatMessageServiceImplTests {
                 .isInstanceOf(ClientException.class)
                 .hasMessage("无权访问该会话");
         verify(chatMessageMapper, never()).insert(any(ChatMessageDO.class));
+    }
+
+    @Test
+    void shouldReturnNullWhenMessageDeleted() {
+        assertThat(chatMessageService.getChatMessage(99L)).isNull();
     }
 
     @Test
@@ -236,8 +234,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldStreamRefusalAnswerWhenRerankResultsEmpty() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("报销流程是什么", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("报销流程是什么", List.of())).thenReturn("报销流程");
         when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(List.of());
@@ -257,8 +253,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldEmitResetWhenFirstCandidateFailsAfterDelta() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a", "candidate-b"));
         when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
@@ -282,8 +276,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldRecordPositiveLatenciesForStreamingTraceStages() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a"));
         when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
@@ -310,8 +302,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldStreamThinkingDeltaEventsForDeepThinkingChitchat() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("qwen-thinking"));
         when(chatModelGateway.tryAcquireStreamingCandidate("qwen-thinking")).thenReturn(true);
@@ -342,8 +332,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldStreamThinkingWithKnowledgeCitations() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("退货规则", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("退货规则", List.of())).thenReturn("退货规则");
         List<RagRetrievalService.RetrievedChunk> recalledChunks = List.of(
@@ -378,8 +366,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldPersistThinkingContentAndDuration() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("qwen-thinking"));
         when(chatModelGateway.tryAcquireStreamingCandidate("qwen-thinking")).thenReturn(true);
@@ -419,8 +405,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldFallbackWhenNoThinkingCandidatesAvailable() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of());
 
@@ -438,8 +422,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldFailoverToNextThinkingCandidateOnError() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("candidate-a", "candidate-b"));
         when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
@@ -466,8 +448,6 @@ class ChatMessageServiceImplTests {
 
     @Test
     void shouldNotPersistUserMessageWhenStreamPreparationFails() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of()))
                 .thenThrow(new RuntimeException("gateway down"));
 

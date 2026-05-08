@@ -321,12 +321,19 @@ class KnowledgeDocumentMutationServiceImplTests {
     void shouldReturnEmptyDepartmentAuthForInternalDocumentDetail() {
         KnowledgeDocumentDO existing = existingDocument(ParseStatusEnum.SUCCESS.getCode());
         existing.setVisibilityScope("INTERNAL");
-        when(knowledgeDocumentMapper.selectById(200L)).thenReturn(existing);
+        when(knowledgeDocumentMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
 
         KnowledgeDocumentDetailResp response = knowledgeDocumentService.getKnowledgeDocument(200L);
 
         assertThat(response.getAuthorizedDepartmentIds()).isEmpty();
         verify(documentDepartmentAuthMapper, never()).selectList(any(Wrapper.class));
+    }
+
+    @Test
+    void shouldReturnNullWhenDocumentDeleted() {
+        KnowledgeDocumentDetailResp response = knowledgeDocumentService.getKnowledgeDocument(200L);
+
+        assertThat(response).isNull();
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -50,7 +51,7 @@ class ChatSessionServiceImplTests {
         session.setUserId(20L);
         session.setTitle("test");
         session.setDeleteFlag(DeleteFlagEnum.NORMAL.getCode());
-        when(chatSessionMapper.selectById(1L)).thenReturn(session);
+        when(chatSessionMapper.selectOne(any())).thenReturn(session);
 
         ChatSessionDetailResp result = chatSessionService.getChatSession(1L);
 
@@ -66,7 +67,7 @@ class ChatSessionServiceImplTests {
         session.setUserId(99L);
         session.setTitle("other");
         session.setDeleteFlag(DeleteFlagEnum.NORMAL.getCode());
-        when(chatSessionMapper.selectById(2L)).thenReturn(session);
+        when(chatSessionMapper.selectOne(any())).thenReturn(session);
 
         assertThatThrownBy(() -> chatSessionService.getChatSession(2L))
                 .isInstanceOf(ClientException.class)
@@ -75,9 +76,16 @@ class ChatSessionServiceImplTests {
 
     @Test
     void shouldReturnNullWhenSessionNotFound() {
-        when(chatSessionMapper.selectById(999L)).thenReturn(null);
+        when(chatSessionMapper.selectOne(any())).thenReturn(null);
 
         ChatSessionDetailResp result = chatSessionService.getChatSession(999L);
+
+        assertThat(result).isNull();
+    }
+
+    @Test
+    void shouldReturnNullWhenSessionDeleted() {
+        ChatSessionDetailResp result = chatSessionService.getChatSession(3L);
 
         assertThat(result).isNull();
     }
