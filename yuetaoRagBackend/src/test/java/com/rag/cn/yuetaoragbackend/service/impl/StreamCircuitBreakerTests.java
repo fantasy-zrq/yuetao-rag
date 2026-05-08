@@ -15,6 +15,8 @@ import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
+import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
+import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatMessageDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatSessionDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
@@ -27,6 +29,7 @@ import com.rag.cn.yuetaoragbackend.dto.resp.ChatStreamEventResp;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -79,6 +82,12 @@ class StreamCircuitBreakerTests {
                 chatMessageMapper, chatSessionMapper, userMapper, qaTraceLogMapper,
                 chatModelGateway, ragRetrievalService, memoryProperties,
                 traceProperties, aiProperties, chatStreamExecutor);
+        UserContext.set(LoginUser.builder().userId("20").build());
+    }
+
+    @AfterEach
+    void tearDown() {
+        UserContext.clear();
     }
 
     // ========== 普通流式熔断场景 ==========
@@ -97,7 +106,7 @@ class StreamCircuitBreakerTests {
                 .thenReturn(Flux.error(new RuntimeException("model-b-down")));
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好").setTraceId("trace-1"))
+                        .setSessionId(10L).setMessage("你好").setTraceId("trace-1"))
                 .collectList().block(Duration.ofSeconds(3));
 
         assertThat(events).hasSize(1);
@@ -122,7 +131,7 @@ class StreamCircuitBreakerTests {
         when(chatModelGateway.candidateInfo("candidate-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好").setTraceId("trace-2"))
+                        .setSessionId(10L).setMessage("你好").setTraceId("trace-2"))
                 .collectList().block(Duration.ofSeconds(3));
 
         assertThat(events).extracting(ChatStreamEventResp::getEvent)
@@ -141,7 +150,7 @@ class StreamCircuitBreakerTests {
         when(chatModelGateway.tryAcquireStreamingCandidate("candidate-b")).thenReturn(false);
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好").setTraceId("trace-3"))
+                        .setSessionId(10L).setMessage("你好").setTraceId("trace-3"))
                 .collectList().block(Duration.ofSeconds(3));
 
         assertThat(events).hasSize(1);
@@ -166,7 +175,7 @@ class StreamCircuitBreakerTests {
         when(chatModelGateway.candidateInfo("candidate-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好").setTraceId("trace-4"))
+                        .setSessionId(10L).setMessage("你好").setTraceId("trace-4"))
                 .collectList().block(Duration.ofSeconds(3));
 
         // candidate-a: message_start (first delta), delta ("你"), error → reset
@@ -189,7 +198,7 @@ class StreamCircuitBreakerTests {
         when(chatModelGateway.candidateInfo("candidate-a")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好").setTraceId("trace-5"))
+                        .setSessionId(10L).setMessage("你好").setTraceId("trace-5"))
                 .collectList().block(Duration.ofSeconds(3));
 
         assertThat(events).extracting(ChatStreamEventResp::getEvent)
@@ -215,7 +224,7 @@ class StreamCircuitBreakerTests {
                 .thenReturn(Flux.error(new RuntimeException("think-b-error")));
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好")
+                        .setSessionId(10L).setMessage("你好")
                         .setDeepThinking(true).setTraceId("trace-6"))
                 .collectList().block(Duration.ofSeconds(3));
 
@@ -241,7 +250,7 @@ class StreamCircuitBreakerTests {
         when(chatModelGateway.candidateInfo("think-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好")
+                        .setSessionId(10L).setMessage("你好")
                         .setDeepThinking(true).setTraceId("trace-7"))
                 .collectList().block(Duration.ofSeconds(3));
 
@@ -274,7 +283,7 @@ class StreamCircuitBreakerTests {
         when(chatModelGateway.candidateInfo("think-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好")
+                        .setSessionId(10L).setMessage("你好")
                         .setDeepThinking(true).setTraceId("trace-8"))
                 .collectList().block(Duration.ofSeconds(3));
 
@@ -309,7 +318,7 @@ class StreamCircuitBreakerTests {
         when(chatModelGateway.candidateInfo("think-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好")
+                        .setSessionId(10L).setMessage("你好")
                         .setDeepThinking(true).setTraceId("trace-9"))
                 .collectList().block(Duration.ofSeconds(3));
 
@@ -339,7 +348,7 @@ class StreamCircuitBreakerTests {
         when(chatModelGateway.candidateInfo("think-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
         chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好")
+                        .setSessionId(10L).setMessage("你好")
                         .setDeepThinking(true).setTraceId("trace-10"))
                 .collectList().block(Duration.ofSeconds(3));
 
@@ -359,7 +368,7 @@ class StreamCircuitBreakerTests {
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of());
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好").setTraceId("trace-11"))
+                        .setSessionId(10L).setMessage("你好").setTraceId("trace-11"))
                 .collectList().block(Duration.ofSeconds(3));
 
         assertThat(events).hasSize(1);
@@ -375,7 +384,7 @@ class StreamCircuitBreakerTests {
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of());
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
-                        .setSessionId(10L).setUserId(20L).setMessage("你好")
+                        .setSessionId(10L).setMessage("你好")
                         .setDeepThinking(true).setTraceId("trace-12"))
                 .collectList().block(Duration.ofSeconds(3));
 

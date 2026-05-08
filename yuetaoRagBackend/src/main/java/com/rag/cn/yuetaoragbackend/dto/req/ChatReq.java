@@ -17,11 +17,6 @@ public class ChatReq {
     private Long sessionId;
 
     /**
-     * 发起用户ID。
-     */
-    private Long userId;
-
-    /**
      * 用户提问内容。
      */
     private String message;

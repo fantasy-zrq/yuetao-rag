@@ -15,6 +15,8 @@ import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
+import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
+import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatMessageDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatSessionDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.QaTraceLogDO;
@@ -31,6 +33,7 @@ import java.util.List;
 import java.time.Duration;
 import org.mockito.ArgumentCaptor;
 import java.util.concurrent.ExecutorService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -99,6 +102,12 @@ class ChatMessageServiceImplTests {
                 traceProperties,
                 aiProperties,
                 chatStreamExecutor);
+        UserContext.set(LoginUser.builder().userId("20").build());
+    }
+
+    @AfterEach
+    void tearDown() {
+        UserContext.clear();
     }
 
     @Test
@@ -112,7 +121,6 @@ class ChatMessageServiceImplTests {
 
         ChatResp response = chatMessageService.chat(new ChatReq()
                 .setSessionId(10L)
-                .setUserId(20L)
                 .setMessage("你好"));
 
         assertThat(response.getIntentType()).isEqualTo("CHITCHAT");
@@ -144,7 +152,6 @@ class ChatMessageServiceImplTests {
 
         ChatResp response = chatMessageService.chat(new ChatReq()
                 .setSessionId(10L)
-                .setUserId(20L)
                 .setMessage("商品退货规则是什么"));
 
         assertThat(response.getIntentType()).isEqualTo("KB_QA");
@@ -168,7 +175,6 @@ class ChatMessageServiceImplTests {
 
         ChatResp response = chatMessageService.chat(new ChatReq()
                 .setSessionId(10L)
-                .setUserId(20L)
                 .setMessage("报销流程是什么"));
 
         assertThat(response.getIntentType()).isEqualTo("KB_QA");
@@ -201,7 +207,6 @@ class ChatMessageServiceImplTests {
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
                         .setSessionId(10L)
-                        .setUserId(20L)
                         .setMessage("报销流程是什么"))
                 .collectList()
                 .block(Duration.ofSeconds(3));
@@ -226,7 +231,6 @@ class ChatMessageServiceImplTests {
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
                         .setSessionId(10L)
-                        .setUserId(20L)
                         .setMessage("你好")
                         .setTraceId("trace-1"))
                 .collectList()
@@ -249,7 +253,6 @@ class ChatMessageServiceImplTests {
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
                         .setSessionId(10L)
-                        .setUserId(20L)
                         .setMessage("你好")
                         .setTraceId("trace-1"))
                 .collectList()
@@ -282,7 +285,6 @@ class ChatMessageServiceImplTests {
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
                         .setSessionId(10L)
-                        .setUserId(20L)
                         .setMessage("你好")
                         .setDeepThinking(true)
                         .setTraceId("trace-thinking"))
@@ -322,7 +324,6 @@ class ChatMessageServiceImplTests {
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
                         .setSessionId(10L)
-                        .setUserId(20L)
                         .setMessage("退货规则")
                         .setDeepThinking(true)
                         .setTraceId("trace-kb"))
@@ -351,7 +352,6 @@ class ChatMessageServiceImplTests {
 
         chatMessageService.buildChatStreamEvents(new ChatStreamReq()
                         .setSessionId(10L)
-                        .setUserId(20L)
                         .setMessage("你好")
                         .setDeepThinking(true))
                 .collectList()
@@ -386,7 +386,6 @@ class ChatMessageServiceImplTests {
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
                         .setSessionId(10L)
-                        .setUserId(20L)
                         .setMessage("你好")
                         .setDeepThinking(true))
                 .collectList()
@@ -416,7 +415,6 @@ class ChatMessageServiceImplTests {
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
                         .setSessionId(10L)
-                        .setUserId(20L)
                         .setMessage("你好")
                         .setDeepThinking(true))
                 .collectList()
@@ -435,7 +433,6 @@ class ChatMessageServiceImplTests {
 
         List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
                         .setSessionId(10L)
-                        .setUserId(20L)
                         .setMessage("你好"))
                 .collectList()
                 .block(Duration.ofSeconds(3));

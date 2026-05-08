@@ -19,8 +19,16 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.ChatMessageMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChatSessionMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.QaTraceLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
+import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
+import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.service.impl.ChatModelGateway;
 import com.rag.cn.yuetaoragbackend.service.impl.RagRetrievalService;
+import jakarta.servlet.Filter;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -33,9 +41,12 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockFilterChain;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.context.WebApplicationContext;
 import reactor.core.publisher.Flux;
 
 /**
@@ -66,7 +77,31 @@ import reactor.core.publisher.Flux;
         "app.ai.embedding.candidates[0].dimension=1024"
 })
 @AutoConfigureMockMvc
+@org.springframework.context.annotation.Import(ChatMessageControllerTests.UserContextTestConfig.class)
 class ChatMessageControllerTests {
+
+    private static Long currentTestUserId;
+
+    @org.springframework.boot.test.context.TestConfiguration
+    static class UserContextTestConfig {
+        @org.springframework.context.annotation.Bean
+        org.springframework.boot.web.servlet.FilterRegistrationBean<Filter> userContextTestFilter() {
+            org.springframework.boot.web.servlet.FilterRegistrationBean<Filter> registrationBean =
+                    new org.springframework.boot.web.servlet.FilterRegistrationBean<>();
+            registrationBean.setFilter((request, response, chain) -> {
+                if (currentTestUserId != null) {
+                    UserContext.set(LoginUser.builder().userId(String.valueOf(currentTestUserId)).build());
+                }
+                try {
+                    chain.doFilter(request, response);
+                } finally {
+                    // 不在这里 clear，让 interceptor 的 afterCompletion 来 clear
+                }
+            });
+            registrationBean.setOrder(-100);
+            return registrationBean;
+        }
+    }
 
     private static final AtomicLong ID_SEQUENCE = new AtomicLong(910000000000000000L);
 
@@ -94,11 +129,25 @@ class ChatMessageControllerTests {
     @MockBean
     private RagRetrievalService ragRetrievalService;
 
+    @MockBean
+    private java.util.concurrent.ExecutorService chatStreamExecutor;
+
     private final List<Long> userIds = new ArrayList<>();
     private final List<Long> sessionIds = new ArrayList<>();
 
+    @org.junit.jupiter.api.BeforeEach
+    void setUp() {
+        // 让 mock executor 同步执行任务，保持 UserContext 可用
+        org.mockito.Mockito.doAnswer(invocation -> {
+            Runnable task = invocation.getArgument(0);
+            task.run();
+            return null;
+        }).when(chatStreamExecutor).execute(org.mockito.ArgumentMatchers.any());
+    }
+
     @AfterEach
     void tearDown() {
+        currentTestUserId = null;
         for (Long sessionId : sessionIds) {
             chatMessageMapper.delete(Wrappers.<ChatMessageDO>lambdaQuery()
                     .eq(ChatMessageDO::getSessionId, sessionId));
@@ -115,6 +164,7 @@ class ChatMessageControllerTests {
     void shouldChatThroughControllerForChitchat() throws Exception {
         UserDO user = persistUser("USER");
         ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        currentTestUserId = user.getId();
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.generateChitchatAnswer("你好", List.of())).thenReturn("你好，请问有什么可以帮你？");
         when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
@@ -124,10 +174,9 @@ class ChatMessageControllerTests {
                         .content("""
                                 {
                                   "sessionId": %d,
-                                  "userId": %d,
                                   "message": "你好"
                                 }
-                                """.formatted(session.getId(), user.getId())))
+                                """.formatted(session.getId())))
                 .andReturn();
 
         JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
@@ -143,6 +192,7 @@ class ChatMessageControllerTests {
     void shouldChatThroughControllerForKnowledgeQuestion() throws Exception {
         UserDO user = persistUser("USER");
         ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        currentTestUserId = user.getId();
         when(chatModelGateway.classifyQuestionIntent("商品退货规则是什么", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("商品退货规则是什么", List.of())).thenReturn("商品退货规则");
         List<RagRetrievalService.RetrievedChunk> recalledChunks = List.of(
@@ -162,10 +212,9 @@ class ChatMessageControllerTests {
                         .content("""
                                 {
                                   "sessionId": %d,
-                                  "userId": %d,
                                   "message": "商品退货规则是什么"
                                 }
-                                """.formatted(session.getId(), user.getId())))
+                                """.formatted(session.getId())))
                 .andReturn();
 
         JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
@@ -183,6 +232,7 @@ class ChatMessageControllerTests {
     void shouldReturnRefusalWhenRerankResultsEmpty() throws Exception {
         UserDO user = persistUser("USER");
         ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        currentTestUserId = user.getId();
         when(chatModelGateway.classifyQuestionIntent("报销流程是什么", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("报销流程是什么", List.of())).thenReturn("报销流程");
         when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(List.of());
@@ -194,10 +244,9 @@ class ChatMessageControllerTests {
                         .content("""
                                 {
                                   "sessionId": %d,
-                                  "userId": %d,
                                   "message": "报销流程是什么"
                                 }
-                                """.formatted(session.getId(), user.getId())))
+                                """.formatted(session.getId())))
                 .andReturn();
 
         JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
@@ -210,12 +259,12 @@ class ChatMessageControllerTests {
 
     @Test
     void shouldRejectWhenRequestMissingRequiredFields() throws Exception {
+        currentTestUserId = 999L;
         MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.post("/chat-messages/chat")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "sessionId": 1,
-                                  "userId": 2,
                                   "message": "   "
                                 }
                                 """))
@@ -223,22 +272,22 @@ class ChatMessageControllerTests {
 
         JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
         assertThat(json.path("code").asText()).isEqualTo("A000001");
-        assertThat(json.path("message").asText()).contains("会话ID、用户ID和消息内容不能为空");
+        assertThat(json.path("message").asText()).contains("会话ID和消息内容不能为空");
     }
 
     @Test
     void shouldRejectWhenSessionNotExists() throws Exception {
         UserDO user = persistUser("USER");
+        currentTestUserId = user.getId();
 
         MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.post("/chat-messages/chat")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "sessionId": 999999,
-                                  "userId": %d,
                                   "message": "你好"
                                 }
-                                """.formatted(user.getId())))
+                                """))
                 .andReturn();
 
         JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
@@ -251,16 +300,16 @@ class ChatMessageControllerTests {
         UserDO owner = persistUser("USER");
         UserDO other = persistUser("USER");
         ChatSessionDO session = persistSession(owner.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        currentTestUserId = other.getId();
 
         MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.post("/chat-messages/chat")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "sessionId": %d,
-                                  "userId": %d,
                                   "message": "你好"
                                 }
-                                """.formatted(session.getId(), other.getId())))
+                                """.formatted(session.getId())))
                 .andReturn();
 
         JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
@@ -272,16 +321,16 @@ class ChatMessageControllerTests {
     void shouldRejectWhenSessionInactive() throws Exception {
         UserDO user = persistUser("USER");
         ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.CLOSED.getCode());
+        currentTestUserId = user.getId();
 
         MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.post("/chat-messages/chat")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "sessionId": %d,
-                                  "userId": %d,
                                   "message": "你好"
                                 }
-                                """.formatted(session.getId(), user.getId())))
+                                """.formatted(session.getId())))
                 .andReturn();
 
         JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
@@ -293,6 +342,7 @@ class ChatMessageControllerTests {
     void shouldRejectWhenUserNotExists() throws Exception {
         UserDO user = persistUser("USER");
         ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        currentTestUserId = user.getId();
         userMapper.deleteById(user.getId());
 
         MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.post("/chat-messages/chat")
@@ -300,10 +350,9 @@ class ChatMessageControllerTests {
                         .content("""
                                 {
                                   "sessionId": %d,
-                                  "userId": %d,
                                   "message": "你好"
                                 }
-                                """.formatted(session.getId(), user.getId())))
+                                """.formatted(session.getId())))
                 .andReturn();
 
         JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
@@ -315,6 +364,7 @@ class ChatMessageControllerTests {
     void shouldReturnServiceErrorWhenGatewayThrowsUnexpectedException() throws Exception {
         UserDO user = persistUser("USER");
         ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        currentTestUserId = user.getId();
         when(chatModelGateway.classifyQuestionIntent("你好", List.of()))
                 .thenThrow(new RuntimeException("gateway down"));
 
@@ -323,10 +373,9 @@ class ChatMessageControllerTests {
                         .content("""
                                 {
                                   "sessionId": %d,
-                                  "userId": %d,
                                   "message": "你好"
                                 }
-                                """.formatted(session.getId(), user.getId())))
+                                """.formatted(session.getId())))
                 .andReturn();
 
         JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
@@ -337,6 +386,7 @@ class ChatMessageControllerTests {
     void shouldReturnSseStreamForChatstream() throws Exception {
         UserDO user = persistUser("USER");
         ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        currentTestUserId = user.getId();
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("qwen-plus"));
         when(chatModelGateway.tryAcquireStreamingCandidate("qwen-plus")).thenReturn(true);
@@ -349,10 +399,9 @@ class ChatMessageControllerTests {
                         .content("""
                                 {
                                   "sessionId": %d,
-                                  "userId": %d,
                                   "message": "你好"
                                 }
-                                """.formatted(session.getId(), user.getId())))
+                                """.formatted(session.getId())))
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
@@ -367,6 +416,7 @@ class ChatMessageControllerTests {
     void shouldCompleteKnowledgeChatstreamWithResetAndPersistOnlyFinalAssistant() throws Exception {
         UserDO user = persistUser("USER");
         ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        currentTestUserId = user.getId();
         String question = "商品退货规则是什么";
         List<RagRetrievalService.RetrievedChunk> recalledChunks = List.of(
                 new RagRetrievalService.RetrievedChunk(101L, 201L, "商品退货规则", 3,
@@ -392,11 +442,10 @@ class ChatMessageControllerTests {
                         .content("""
                                 {
                                   "sessionId": %d,
-                                  "userId": %d,
                                   "message": "%s",
                                   "traceId": "trace-real-user-reset"
                                 }
-                                """.formatted(session.getId(), user.getId(), question)))
+                                """.formatted(session.getId(), question)))
                 .andExpect(request().asyncStarted())
                 .andReturn();
 
@@ -434,6 +483,7 @@ class ChatMessageControllerTests {
     void shouldHideCandidateThatFailsBeforeFirstDeltaInChatstream() throws Exception {
         UserDO user = persistUser("USER");
         ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        currentTestUserId = user.getId();
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("qwen-plus", "glm-4.7"));
         when(chatModelGateway.tryAcquireStreamingCandidate("qwen-plus")).thenReturn(true);
@@ -449,11 +499,10 @@ class ChatMessageControllerTests {
                         .content("""
                                 {
                                   "sessionId": %d,
-                                  "userId": %d,
                                   "message": "你好",
                                   "traceId": "trace-first-token-failure"
                                 }
-                                """.formatted(session.getId(), user.getId())))
+                                """.formatted(session.getId())))
                 .andExpect(request().asyncStarted())
                 .andReturn();
 

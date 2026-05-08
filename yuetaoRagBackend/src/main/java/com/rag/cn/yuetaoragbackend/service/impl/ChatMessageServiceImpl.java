@@ -23,6 +23,7 @@ import com.rag.cn.yuetaoragbackend.dto.req.ChatReq;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.*;
+import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import com.rag.cn.yuetaoragbackend.service.ChatMessageService;
@@ -75,13 +76,14 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ChatResp chat(ChatReq requestParam) {
-        if (requestParam == null || requestParam.getSessionId() == null || requestParam.getUserId() == null
+        if (requestParam == null || requestParam.getSessionId() == null
                 || !StringUtils.hasText(requestParam.getMessage())) {
-            throw new ClientException("会话ID、用户ID和消息内容不能为空");
+            throw new ClientException("会话ID和消息内容不能为空");
         }
+        Long userId = currentUserId();
 
-        ChatSessionDO sessionDO = requireSession(requestParam.getSessionId(), requestParam.getUserId());
-        UserDO userDO = requireUser(requestParam.getUserId());
+        ChatSessionDO sessionDO = requireSession(requestParam.getSessionId(), userId);
+        UserDO userDO = requireUser(userId);
 
         String traceId = StringUtils.hasText(requestParam.getTraceId()) ? requestParam.getTraceId() : UUID.randomUUID().toString();
 
@@ -91,7 +93,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
         long intentStart = System.nanoTime();
         String intentType = chatModelGateway.classifyQuestionIntent(requestParam.getMessage(), historyTexts);
-        writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "INTENT",
+        writeTrace(traceId, requestParam.getSessionId(), userId, "INTENT",
                 "SUCCESS",
                 elapsedMillis(intentStart),
                 "intent=" + intentType);
@@ -104,35 +106,35 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         if ("CHITCHAT".equals(intentType)) {
             long generateStart = System.nanoTime();
             answer = chatModelGateway.generateChitchatAnswer(requestParam.getMessage(), historyTexts);
-            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "GENERATE",
+            writeTrace(traceId, requestParam.getSessionId(), userId, "GENERATE",
                     "SUCCESS",
                     elapsedMillis(generateStart),
                     "intent=CHITCHAT");
         } else {
             long rewriteStart = System.nanoTime();
             rewrittenQuery = chatModelGateway.rewriteQuestion(requestParam.getMessage(), historyTexts);
-            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "REWRITE",
+            writeTrace(traceId, requestParam.getSessionId(), userId, "REWRITE",
                     "SUCCESS",
                     elapsedMillis(rewriteStart),
                     "rewrittenQuery=" + shorten(rewrittenQuery, 240));
 
             long retrieveStart = System.nanoTime();
             List<RagRetrievalService.RetrievedChunk> recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
-            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "RETRIEVE",
+            writeTrace(traceId, requestParam.getSessionId(), userId, "RETRIEVE",
                     "SUCCESS",
                     elapsedMillis(retrieveStart),
                     "candidateCount=" + recalledChunks.size());
 
             long rerankStart = System.nanoTime();
             List<RagRetrievalService.RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
-            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "RERANK",
+            writeTrace(traceId, requestParam.getSessionId(), userId, "RERANK",
                     "SUCCESS",
                     elapsedMillis(rerankStart),
                     "rerankCount=" + rerankedChunks.size());
 
             if (rerankedChunks.isEmpty()) {
                 answer = "当前知识库中没有该方面的内容，暂时无法回答这个问题。";
-                writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "GENERATE",
+                writeTrace(traceId, requestParam.getSessionId(), userId, "GENERATE",
                         "CANCELLED",
                         1L,
                         "rerank-empty");
@@ -143,7 +145,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                         rewrittenQuery,
                         historyTexts,
                         rerankedChunks);
-                writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "GENERATE",
+                writeTrace(traceId, requestParam.getSessionId(), userId, "GENERATE",
                         "SUCCESS",
                         elapsedMillis(generateStart),
                         "citationCount=" + rerankedChunks.size());
@@ -155,7 +157,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         ChatModelInfoRecord modelInfo = chatModelGateway.currentModelInfo();
         ChatMessageDO userMessage = new ChatMessageDO()
                 .setSessionId(requestParam.getSessionId())
-                .setUserId(requestParam.getUserId())
+                .setUserId(userId)
                 .setRole("USER")
                 .setContent(requestParam.getMessage())
                 .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
@@ -165,7 +167,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
         ChatMessageDO assistantMessage = new ChatMessageDO()
                 .setSessionId(requestParam.getSessionId())
-                .setUserId(requestParam.getUserId())
+                .setUserId(userId)
                 .setRole("ASSISTANT")
                 .setContent(answer)
                 .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
@@ -243,8 +245,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     Flux<ChatStreamEventResp> buildChatStreamEvents(ChatStreamReq requestParam) {
         try {
             validateStreamRequest(requestParam);
-            ChatSessionDO sessionDO = requireSession(requestParam.getSessionId(), requestParam.getUserId());
-            UserDO userDO = requireUser(requestParam.getUserId());
+            Long userId = currentUserId();
+            ChatSessionDO sessionDO = requireSession(requestParam.getSessionId(), userId);
+            UserDO userDO = requireUser(userId);
             String traceId = StringUtils.hasText(requestParam.getTraceId()) ? requestParam.getTraceId() : UUID.randomUUID().toString();
             List<ChatMessageDO> recentMessages = loadRecentMessages(requestParam.getSessionId());
             int nextSequenceNo = nextSequenceNo(recentMessages);
@@ -252,18 +255,18 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
             long intentStart = System.nanoTime();
             String intentType = chatModelGateway.classifyQuestionIntent(requestParam.getMessage(), historyTexts);
-            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "INTENT",
+            writeTrace(traceId, requestParam.getSessionId(), userId, "INTENT",
                     "SUCCESS", elapsedMillis(intentStart), "intent=" + intentType);
 
             boolean deepThinking = Boolean.TRUE.equals(requestParam.getDeepThinking());
 
             if ("CHITCHAT".equals(intentType)) {
-                persistUserMessage(requestParam, traceId, nextSequenceNo);
+                persistUserMessage(requestParam, userId, traceId, nextSequenceNo);
                 if (deepThinking) {
                     return streamThinkingByCandidates(
                             traceId,
                             requestParam.getSessionId(),
-                            requestParam.getUserId(),
+                            userId,
                             nextSequenceNo + 1,
                             requestParam.getMessage(),
                             List.of(),
@@ -273,7 +276,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 return streamByCandidates(
                         traceId,
                         requestParam.getSessionId(),
-                        requestParam.getUserId(),
+                        userId,
                         nextSequenceNo + 1,
                         requestParam.getMessage(),
                         List.of(),
@@ -283,34 +286,34 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
             long rewriteStart = System.nanoTime();
             String rewrittenQuery = chatModelGateway.rewriteQuestion(requestParam.getMessage(), historyTexts);
-            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "REWRITE",
+            writeTrace(traceId, requestParam.getSessionId(), userId, "REWRITE",
                     "SUCCESS", elapsedMillis(rewriteStart), "rewrittenQuery=" + shorten(rewrittenQuery, 240));
             long retrieveStart = System.nanoTime();
             List<RagRetrievalService.RetrievedChunk> recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
-            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "RETRIEVE",
+            writeTrace(traceId, requestParam.getSessionId(), userId, "RETRIEVE",
                     "SUCCESS", elapsedMillis(retrieveStart), "candidateCount=" + recalledChunks.size());
             long rerankStart = System.nanoTime();
             List<RagRetrievalService.RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
-            writeTrace(traceId, requestParam.getSessionId(), requestParam.getUserId(), "RERANK",
+            writeTrace(traceId, requestParam.getSessionId(), userId, "RERANK",
                     "SUCCESS", elapsedMillis(rerankStart), "rerankCount=" + rerankedChunks.size());
 
             if (rerankedChunks.isEmpty()) {
-                persistUserMessage(requestParam, traceId, nextSequenceNo);
+                persistUserMessage(requestParam, userId, traceId, nextSequenceNo);
                 return streamStaticAnswer(
                         traceId,
                         sessionDO,
-                        requestParam.getUserId(),
+                        userId,
                         nextSequenceNo + 1,
                         requestParam.getMessage(),
                         "当前知识库中没有该方面的内容，暂时无法回答这个问题。");
             }
 
-            persistUserMessage(requestParam, traceId, nextSequenceNo);
+            persistUserMessage(requestParam, userId, traceId, nextSequenceNo);
             if (deepThinking) {
                 return streamThinkingByCandidates(
                         traceId,
                         requestParam.getSessionId(),
-                        requestParam.getUserId(),
+                        userId,
                         nextSequenceNo + 1,
                         requestParam.getMessage(),
                         toStreamCitationResponses(rerankedChunks),
@@ -325,7 +328,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             return streamByCandidates(
                     traceId,
                     requestParam.getSessionId(),
-                    requestParam.getUserId(),
+                    userId,
                     nextSequenceNo + 1,
                     requestParam.getMessage(),
                     toStreamCitationResponses(rerankedChunks),
@@ -455,9 +458,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     }
 
     private void validateStreamRequest(ChatStreamReq requestParam) {
-        if (requestParam == null || requestParam.getSessionId() == null || requestParam.getUserId() == null
+        if (requestParam == null || requestParam.getSessionId() == null
                 || !StringUtils.hasText(requestParam.getMessage())) {
-            throw new ClientException("会话ID、用户ID和消息内容不能为空");
+            throw new ClientException("会话ID和消息内容不能为空");
         }
     }
 
@@ -467,6 +470,14 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             throw new ClientException("用户不存在");
         }
         return userDO;
+    }
+
+    private Long currentUserId() {
+        try {
+            return Long.parseLong(UserContext.requireUser().getUserId());
+        } catch (NumberFormatException ex) {
+            throw new ClientException("当前登录用户ID非法");
+        }
     }
 
     private List<ChatMessageDO> loadRecentMessages(Long sessionId) {
@@ -528,10 +539,10 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .toList();
     }
 
-    private void persistUserMessage(ChatStreamReq requestParam, String traceId, int sequenceNo) {
+    private void persistUserMessage(ChatStreamReq requestParam, Long userId, String traceId, int sequenceNo) {
         ChatMessageDO userMessage = new ChatMessageDO()
                 .setSessionId(requestParam.getSessionId())
-                .setUserId(requestParam.getUserId())
+                .setUserId(userId)
                 .setRole("USER")
                 .setContent(requestParam.getMessage())
                 .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
