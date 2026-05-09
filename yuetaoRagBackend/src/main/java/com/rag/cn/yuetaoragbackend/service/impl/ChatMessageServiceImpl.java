@@ -34,6 +34,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import org.redisson.api.RAtomicLong;
+import org.redisson.api.RedissonClient;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -71,6 +73,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     private final MemoryProperties memoryProperties;
     private final TraceProperties traceProperties;
     private final AiProperties aiProperties;
+    private final RedissonClient redissonClient;
     private final ExecutorService chatStreamExecutor;
 
     @Override
@@ -88,7 +91,6 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         String traceId = StringUtils.hasText(requestParam.getTraceId()) ? requestParam.getTraceId() : UUID.randomUUID().toString();
 
         List<ChatMessageDO> recentMessages = loadRecentMessages(requestParam.getSessionId());
-        int nextSequenceNo = nextSequenceNo(recentMessages);
         List<String> historyTexts = toHistoryTexts(recentMessages);
 
         long intentStart = System.nanoTime();
@@ -154,6 +156,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             }
         }
 
+        SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
         ChatModelInfoRecord modelInfo = chatModelGateway.currentModelInfo();
         ChatMessageDO userMessage = new ChatMessageDO()
                 .setSessionId(requestParam.getSessionId())
@@ -161,7 +164,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .setRole("USER")
                 .setContent(requestParam.getMessage())
                 .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
-                .setSequenceNo(nextSequenceNo)
+                .setSequenceNo(sequenceReservation.userSequenceNo())
                 .setTraceId(traceId);
         chatMessageMapper.insert(userMessage);
 
@@ -171,7 +174,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .setRole("ASSISTANT")
                 .setContent(answer)
                 .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
-                .setSequenceNo(nextSequenceNo + 1)
+                .setSequenceNo(sequenceReservation.assistantSequenceNo())
                 .setTraceId(traceId)
                 .setModelProvider(modelInfo.provider())
                 .setModelName(modelInfo.modelName());
@@ -250,7 +253,6 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             UserDO userDO = requireUser(userId);
             String traceId = StringUtils.hasText(requestParam.getTraceId()) ? requestParam.getTraceId() : UUID.randomUUID().toString();
             List<ChatMessageDO> recentMessages = loadRecentMessages(requestParam.getSessionId());
-            int nextSequenceNo = nextSequenceNo(recentMessages);
             List<String> historyTexts = toHistoryTexts(recentMessages);
 
             long intentStart = System.nanoTime();
@@ -261,13 +263,14 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             boolean deepThinking = Boolean.TRUE.equals(requestParam.getDeepThinking());
 
             if ("CHITCHAT".equals(intentType)) {
-                persistUserMessage(requestParam, userId, traceId, nextSequenceNo);
+                SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
+                persistUserMessage(requestParam, userId, traceId, sequenceReservation.userSequenceNo());
                 if (deepThinking) {
                     return streamThinkingByCandidates(
                             traceId,
                             requestParam.getSessionId(),
                             userId,
-                            nextSequenceNo + 1,
+                            sequenceReservation.assistantSequenceNo(),
                             requestParam.getMessage(),
                             List.of(),
                             chatModelGateway.thinkingCandidateIds(),
@@ -277,7 +280,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                         traceId,
                         requestParam.getSessionId(),
                         userId,
-                        nextSequenceNo + 1,
+                        sequenceReservation.assistantSequenceNo(),
                         requestParam.getMessage(),
                         List.of(),
                         chatModelGateway.streamingCandidateIds(),
@@ -298,23 +301,25 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     "SUCCESS", elapsedMillis(rerankStart), "rerankCount=" + rerankedChunks.size());
 
             if (rerankedChunks.isEmpty()) {
-                persistUserMessage(requestParam, userId, traceId, nextSequenceNo);
+                SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
+                persistUserMessage(requestParam, userId, traceId, sequenceReservation.userSequenceNo());
                 return streamStaticAnswer(
                         traceId,
                         sessionDO,
                         userId,
-                        nextSequenceNo + 1,
+                        sequenceReservation.assistantSequenceNo(),
                         requestParam.getMessage(),
                         "当前知识库中没有该方面的内容，暂时无法回答这个问题。");
             }
 
-            persistUserMessage(requestParam, userId, traceId, nextSequenceNo);
+            SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
+            persistUserMessage(requestParam, userId, traceId, sequenceReservation.userSequenceNo());
             if (deepThinking) {
                 return streamThinkingByCandidates(
                         traceId,
                         requestParam.getSessionId(),
                         userId,
-                        nextSequenceNo + 1,
+                        sequenceReservation.assistantSequenceNo(),
                         requestParam.getMessage(),
                         toStreamCitationResponses(rerankedChunks),
                         chatModelGateway.thinkingCandidateIds(),
@@ -329,7 +334,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     traceId,
                     requestParam.getSessionId(),
                     userId,
-                    nextSequenceNo + 1,
+                    sequenceReservation.assistantSequenceNo(),
                     requestParam.getMessage(),
                     toStreamCitationResponses(rerankedChunks),
                     chatModelGateway.streamingCandidateIds(),
@@ -516,12 +521,34 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return recentMessages;
     }
 
-    private int nextSequenceNo(List<ChatMessageDO> recentMessages) {
-        if (recentMessages == null || recentMessages.isEmpty()) {
-            return 1;
+    private SequenceReservation reserveMessageSequences(Long sessionId) {
+        long latestSequenceNo = loadLatestSequenceNo(sessionId);
+        RAtomicLong sequenceCounter = redissonClient.getAtomicLong(messageSequenceCounterKey(sessionId));
+        long currentCounter = sequenceCounter.get();
+        if (currentCounter < latestSequenceNo) {
+            sequenceCounter.compareAndSet(currentCounter, latestSequenceNo);
         }
-        ChatMessageDO latest = recentMessages.get(recentMessages.size() - 1);
-        return latest.getSequenceNo() == null ? 1 : latest.getSequenceNo() + 1;
+        long assistantSequenceNo = sequenceCounter.addAndGet(2L);
+        return new SequenceReservation(
+                Math.toIntExact(assistantSequenceNo - 1),
+                Math.toIntExact(assistantSequenceNo));
+    }
+
+    private long loadLatestSequenceNo(Long sessionId) {
+        Page<ChatMessageDO> page = new Page<>(1, 1, false);
+        List<ChatMessageDO> records = chatMessageMapper.selectPage(page, Wrappers.<ChatMessageDO>lambdaQuery()
+                        .eq(ChatMessageDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())
+                        .eq(ChatMessageDO::getSessionId, sessionId)
+                        .orderByDesc(ChatMessageDO::getSequenceNo))
+                .getRecords();
+        if (records == null || records.isEmpty() || records.get(0).getSequenceNo() == null) {
+            return 0L;
+        }
+        return records.get(0).getSequenceNo();
+    }
+
+    private String messageSequenceCounterKey(Long sessionId) {
+        return "chat:message:sequence:" + sessionId;
     }
 
     private List<String> toHistoryTexts(List<ChatMessageDO> messages) {
@@ -874,5 +901,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             return text;
         }
         return text.substring(0, maxLength);
+    }
+
+    private record SequenceReservation(int userSequenceNo, int assistantSequenceNo) {
     }
 }

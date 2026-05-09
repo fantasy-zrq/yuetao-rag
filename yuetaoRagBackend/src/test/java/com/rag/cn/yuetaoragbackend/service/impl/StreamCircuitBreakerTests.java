@@ -2,6 +2,8 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -29,6 +31,7 @@ import com.rag.cn.yuetaoragbackend.dto.resp.ChatStreamEventResp;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,6 +39,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.redisson.api.RAtomicLong;
+import org.redisson.api.RedissonClient;
 import reactor.core.publisher.Flux;
 
 /**
@@ -57,6 +62,11 @@ class StreamCircuitBreakerTests {
     @Mock
     private RagRetrievalService ragRetrievalService;
     @Mock
+    private RedissonClient redissonClient;
+    @Mock
+    private RAtomicLong messageSequenceCounter;
+    private final AtomicLong redisSequenceState = new AtomicLong();
+    @Mock
     private ExecutorService chatStreamExecutor;
 
     private MemoryProperties memoryProperties;
@@ -76,12 +86,21 @@ class StreamCircuitBreakerTests {
         aiProperties = new AiProperties();
         aiProperties.getCircuitBreaker().setFirstTokenTimeoutMillis(2000);
         aiProperties.getCircuitBreaker().setStreamChunkIdleTimeoutMillis(2000);
+        redisSequenceState.set(0L);
         lenient().when(chatMessageMapper.selectPage(any(), any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
+        lenient().when(chatSessionMapper.selectOne(any())).thenReturn(session());
+        lenient().when(userMapper.selectOne(any())).thenReturn(user());
+        lenient().when(redissonClient.getAtomicLong(anyString())).thenReturn(messageSequenceCounter);
+        lenient().when(messageSequenceCounter.get()).thenAnswer(invocation -> redisSequenceState.get());
+        lenient().when(messageSequenceCounter.compareAndSet(anyLong(), anyLong())).thenAnswer(invocation ->
+                redisSequenceState.compareAndSet(invocation.getArgument(0), invocation.getArgument(1)));
+        lenient().when(messageSequenceCounter.addAndGet(2L)).thenAnswer(invocation ->
+                redisSequenceState.addAndGet(invocation.getArgument(0)));
         chatMessageService = new ChatMessageServiceImpl(
                 chatMessageMapper, chatSessionMapper, userMapper, qaTraceLogMapper,
                 chatModelGateway, ragRetrievalService, memoryProperties,
-                traceProperties, aiProperties, chatStreamExecutor);
+                traceProperties, aiProperties, redissonClient, chatStreamExecutor);
         UserContext.set(LoginUser.builder().userId("20").build());
     }
 
@@ -94,8 +113,6 @@ class StreamCircuitBreakerTests {
 
     @Test
     void shouldEmitErrorWhenAllStreamingCandidatesFail() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a", "candidate-b"));
         when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
@@ -119,8 +136,6 @@ class StreamCircuitBreakerTests {
 
     @Test
     void shouldSkipCircuitOpenCandidateAndTryNext() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a", "candidate-b"));
         // candidate-a is circuit-open (tryAcquire returns false)
@@ -142,8 +157,6 @@ class StreamCircuitBreakerTests {
 
     @Test
     void shouldEmitErrorWhenAllCandidatesCircuitOpen() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a", "candidate-b"));
         when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(false);
@@ -161,8 +174,6 @@ class StreamCircuitBreakerTests {
 
     @Test
     void shouldEmitResetWhenFailoverAfterPartialDelta() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a", "candidate-b"));
         when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
@@ -188,8 +199,6 @@ class StreamCircuitBreakerTests {
 
     @Test
     void shouldStreamNormallyWhenFirstCandidateSucceeds() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a", "candidate-b"));
         when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
@@ -212,8 +221,6 @@ class StreamCircuitBreakerTests {
 
     @Test
     void shouldEmitErrorWhenAllThinkingCandidatesFail() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("think-a", "think-b"));
         when(chatModelGateway.tryAcquireStreamingCandidate("think-a")).thenReturn(true);
@@ -236,8 +243,6 @@ class StreamCircuitBreakerTests {
 
     @Test
     void shouldSkipCircuitOpenThinkingCandidateAndTryNext() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("think-a", "think-b"));
         when(chatModelGateway.tryAcquireStreamingCandidate("think-a")).thenReturn(false);
@@ -263,8 +268,6 @@ class StreamCircuitBreakerTests {
     @Test
     void shouldNotEmitResetWhenThinkingStreamFailsWithoutContentDelta() {
         // sawDelta 只追踪 content delta，thinking-only 失败不会触发 reset
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("think-a", "think-b"));
         when(chatModelGateway.tryAcquireStreamingCandidate("think-a")).thenReturn(true);
@@ -297,8 +300,6 @@ class StreamCircuitBreakerTests {
     @Test
     void shouldEmitResetWhenThinkingStreamFailsAfterContentDelta() {
         // 有 content delta 后失败，会触发 reset
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("think-a", "think-b"));
         when(chatModelGateway.tryAcquireStreamingCandidate("think-a")).thenReturn(true);
@@ -332,8 +333,6 @@ class StreamCircuitBreakerTests {
 
     @Test
     void shouldPersistThinkingContentAfterFailover() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("think-a", "think-b"));
         when(chatModelGateway.tryAcquireStreamingCandidate("think-a")).thenReturn(true);
@@ -362,8 +361,6 @@ class StreamCircuitBreakerTests {
 
     @Test
     void shouldEmitErrorWhenNoStreamingCandidatesAvailable() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of());
 
@@ -378,8 +375,6 @@ class StreamCircuitBreakerTests {
 
     @Test
     void shouldEmitErrorWhenNoThinkingCandidatesAvailableForDeepThinking() {
-        when(chatSessionMapper.selectById(10L)).thenReturn(session());
-        when(userMapper.selectById(20L)).thenReturn(user());
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of());
 

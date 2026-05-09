@@ -3,6 +3,8 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -10,6 +12,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
 import com.rag.cn.yuetaoragbackend.config.enums.ChatSessionStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
@@ -34,6 +37,7 @@ import com.rag.cn.yuetaoragbackend.dto.resp.ChatStreamEventResp;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import java.util.List;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicLong;
 import org.mockito.ArgumentCaptor;
 import java.util.concurrent.ExecutorService;
 import org.junit.jupiter.api.AfterEach;
@@ -43,6 +47,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.redisson.api.RAtomicLong;
+import org.redisson.api.RedissonClient;
 import reactor.core.publisher.Flux;
 
 /**
@@ -71,6 +77,14 @@ class ChatMessageServiceImplTests {
     private RagRetrievalService ragRetrievalService;
 
     @Mock
+    private RedissonClient redissonClient;
+
+    @Mock
+    private RAtomicLong messageSequenceCounter;
+
+    private final AtomicLong redisSequenceState = new AtomicLong();
+
+    @Mock
     private ExecutorService chatStreamExecutor;
 
     private MemoryProperties memoryProperties;
@@ -92,8 +106,16 @@ class ChatMessageServiceImplTests {
         aiProperties = new AiProperties();
         aiProperties.getCircuitBreaker().setFirstTokenTimeoutMillis(2000);
         aiProperties.getCircuitBreaker().setStreamChunkIdleTimeoutMillis(2000);
+        redisSequenceState.set(0L);
         lenient().when(chatMessageMapper.selectPage(any(), any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
+        lenient().when(redissonClient.getAtomicLong(anyString()))
+                .thenReturn(messageSequenceCounter);
+        lenient().when(messageSequenceCounter.get()).thenAnswer(invocation -> redisSequenceState.get());
+        lenient().when(messageSequenceCounter.compareAndSet(anyLong(), anyLong())).thenAnswer(invocation ->
+                redisSequenceState.compareAndSet(invocation.getArgument(0), invocation.getArgument(1)));
+        lenient().when(messageSequenceCounter.addAndGet(2L)).thenAnswer(invocation ->
+                redisSequenceState.addAndGet(invocation.getArgument(0)));
         chatMessageService = new ChatMessageServiceImpl(
                 chatMessageMapper,
                 chatSessionMapper,
@@ -104,6 +126,7 @@ class ChatMessageServiceImplTests {
                 memoryProperties,
                 traceProperties,
                 aiProperties,
+                redissonClient,
                 chatStreamExecutor);
         lenient().when(chatSessionMapper.selectOne(any())).thenReturn(session());
         lenient().when(userMapper.selectOne(any())).thenReturn(user());
@@ -132,7 +155,39 @@ class ChatMessageServiceImplTests {
         assertThat(response.getAnswer()).contains("你好");
         verify(ragRetrievalService, never()).retrieve(any(), any());
         verify(ragRetrievalService, never()).rerank(any(String.class), any(List.class));
-        verify(chatMessageMapper, times(2)).insert(any(ChatMessageDO.class));
+        ArgumentCaptor<ChatMessageDO> messageCaptor = ArgumentCaptor.forClass(ChatMessageDO.class);
+        verify(chatMessageMapper, times(2)).insert(messageCaptor.capture());
+        assertThat(messageCaptor.getAllValues())
+                .extracting(ChatMessageDO::getSequenceNo)
+                .containsExactly(1, 2);
+    }
+
+    @Test
+    void shouldContinueAllocatingAfterLatestDbSequenceWhenRedisCounterBehind() {
+        when(chatMessageMapper.selectPage(any(), any())).thenAnswer(invocation -> {
+            Page<ChatMessageDO> page = invocation.getArgument(0);
+            if (page.getSize() == 1) {
+                page.setRecords(List.of(new ChatMessageDO().setSequenceNo(8)));
+            } else {
+                page.setRecords(List.of());
+            }
+            return page;
+        });
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.generateChitchatAnswer("你好", List.of()))
+                .thenReturn("你好，请问有什么可以帮你？");
+        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        chatMessageService.chat(new ChatReq()
+                .setSessionId(10L)
+                .setMessage("你好"));
+
+        ArgumentCaptor<ChatMessageDO> messageCaptor = ArgumentCaptor.forClass(ChatMessageDO.class);
+        verify(chatMessageMapper, times(2)).insert(messageCaptor.capture());
+        assertThat(messageCaptor.getAllValues())
+                .extracting(ChatMessageDO::getSequenceNo)
+                .containsExactly(9, 10);
+        assertThat(redisSequenceState.get()).isEqualTo(10L);
     }
 
     @Test
@@ -385,6 +440,9 @@ class ChatMessageServiceImplTests {
 
         ArgumentCaptor<ChatMessageDO> messageCaptor = ArgumentCaptor.forClass(ChatMessageDO.class);
         verify(chatMessageMapper, times(2)).insert(messageCaptor.capture());
+        assertThat(messageCaptor.getAllValues())
+                .extracting(ChatMessageDO::getSequenceNo)
+                .containsExactly(1, 2);
         ChatMessageDO assistantMessage = messageCaptor.getAllValues().get(1);
         assertThat(assistantMessage.getThinkingContent()).isEqualTo("思考中...");
         assertThat(assistantMessage.getThinkingDurationMs()).isNotNull();
