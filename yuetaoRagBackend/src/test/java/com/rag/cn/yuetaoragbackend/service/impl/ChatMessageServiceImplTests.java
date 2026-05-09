@@ -38,6 +38,7 @@ import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import java.util.List;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import org.mockito.ArgumentCaptor;
 import java.util.concurrent.ExecutorService;
 import org.junit.jupiter.api.AfterEach;
@@ -50,6 +51,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RedissonClient;
 import reactor.core.publisher.Flux;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * @author zrq
@@ -330,6 +333,37 @@ class ChatMessageServiceImplTests {
     }
 
     @Test
+    void shouldEmitErrorWithoutFailoverWhenAssistantPersistenceFailsAfterStreamingContent() {
+        when(chatMessageMapper.insert(any(ChatMessageDO.class))).thenAnswer(invocation -> {
+            ChatMessageDO message = invocation.getArgument(0);
+            if ("ASSISTANT".equals(message.getRole())) {
+                throw new RuntimeException("db-write-failed");
+            }
+            return 1;
+        });
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a", "candidate-b"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
+        when(chatModelGateway.streamChitchatByCandidate("candidate-a", "你好", List.of()))
+                .thenReturn(Flux.just("你好！"));
+        when(chatModelGateway.candidateInfo("candidate-a")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setMessage("你好")
+                        .setTraceId("trace-persist-fail"))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsExactly("message_start", "delta", "error");
+        assertThat(events.get(2).getMessage()).contains("保存失败");
+        verify(chatModelGateway).markStreamingCandidateSuccess("candidate-a");
+        verify(chatModelGateway, never()).markStreamingCandidateFailure("candidate-a");
+        verify(chatModelGateway, never()).tryAcquireStreamingCandidate("candidate-b");
+    }
+
+    @Test
     void shouldRecordPositiveLatenciesForStreamingTraceStages() {
         when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a"));
@@ -353,6 +387,57 @@ class ChatMessageServiceImplTests {
         assertThat(captor.getAllValues())
                 .extracting(QaTraceLogDO::getLatencyMs)
                 .allMatch(value -> value != null && value > 0);
+    }
+
+    @Test
+    void shouldPersistStreamingCompletionOffModelSourceScheduler() {
+        AtomicReference<String> assistantInsertThread = new AtomicReference<>();
+        AtomicReference<String> sessionUpdateThread = new AtomicReference<>();
+        AtomicReference<String> successTraceThread = new AtomicReference<>();
+        when(chatMessageMapper.insert(any(ChatMessageDO.class))).thenAnswer(invocation -> {
+            ChatMessageDO message = invocation.getArgument(0);
+            if ("ASSISTANT".equals(message.getRole())) {
+                assistantInsertThread.set(Thread.currentThread().getName());
+            }
+            return 1;
+        });
+        when(chatSessionMapper.updateById(any(ChatSessionDO.class))).thenAnswer(invocation -> {
+            sessionUpdateThread.set(Thread.currentThread().getName());
+            return 1;
+        });
+        when(qaTraceLogMapper.insert(any(QaTraceLogDO.class))).thenAnswer(invocation -> {
+            QaTraceLogDO traceLogDO = invocation.getArgument(0);
+            if ("STREAM_CANDIDATE".equals(traceLogDO.getStage())
+                    && "SUCCESS".equals(traceLogDO.getStatus())) {
+                successTraceThread.set(Thread.currentThread().getName());
+            }
+            return 1;
+        });
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
+        when(chatModelGateway.candidateInfo("candidate-a")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        Scheduler sourceScheduler = Schedulers.newSingle("stream-source");
+        try {
+            when(chatModelGateway.streamChitchatByCandidate("candidate-a", "你好", List.of()))
+                    .thenReturn(Flux.just("你", "好").publishOn(sourceScheduler));
+
+            List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                            .setSessionId(10L)
+                            .setMessage("你好")
+                            .setTraceId("trace-offload"))
+                    .collectList()
+                    .block(Duration.ofSeconds(3));
+
+            assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                    .containsExactly("message_start", "delta", "delta", "message_end");
+            assertThat(assistantInsertThread.get()).startsWith("boundedElastic-");
+            assertThat(sessionUpdateThread.get()).startsWith("boundedElastic-");
+            assertThat(successTraceThread.get()).startsWith("boundedElastic-");
+        } finally {
+            sourceScheduler.dispose();
+        }
     }
 
     @Test
@@ -448,6 +533,96 @@ class ChatMessageServiceImplTests {
         assertThat(assistantMessage.getThinkingDurationMs()).isNotNull();
         assertThat(assistantMessage.getThinkingDurationMs()).isGreaterThan(0);
         assertThat(assistantMessage.getContent()).isEqualTo("你好！");
+    }
+
+    @Test
+    void shouldEmitErrorWithoutFailoverWhenThinkingAssistantPersistenceFailsAfterStreamingContent() {
+        when(chatMessageMapper.insert(any(ChatMessageDO.class))).thenAnswer(invocation -> {
+            ChatMessageDO message = invocation.getArgument(0);
+            if ("ASSISTANT".equals(message.getRole())) {
+                throw new RuntimeException("db-write-failed");
+            }
+            return 1;
+        });
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("think-a", "think-b"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("think-a")).thenReturn(true);
+        when(chatModelGateway.streamThinkingChitchatByCandidate("think-a", "你好", List.of()))
+                .thenReturn(Flux.just(
+                        new StreamContent("思考中...", null),
+                        new StreamContent(null, "你好！")
+                ));
+        when(chatModelGateway.candidateInfo("think-a")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setMessage("你好")
+                        .setDeepThinking(true)
+                        .setTraceId("trace-thinking-persist-fail"))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsExactly("thinking_delta", "message_start", "delta", "error");
+        assertThat(events.get(3).getMessage()).contains("保存失败");
+        verify(chatModelGateway).markStreamingCandidateSuccess("think-a");
+        verify(chatModelGateway, never()).markStreamingCandidateFailure("think-a");
+        verify(chatModelGateway, never()).tryAcquireStreamingCandidate("think-b");
+    }
+
+    @Test
+    void shouldPersistThinkingStreamingCompletionOffModelSourceScheduler() {
+        AtomicReference<String> assistantInsertThread = new AtomicReference<>();
+        AtomicReference<String> sessionUpdateThread = new AtomicReference<>();
+        AtomicReference<String> successTraceThread = new AtomicReference<>();
+        when(chatMessageMapper.insert(any(ChatMessageDO.class))).thenAnswer(invocation -> {
+            ChatMessageDO message = invocation.getArgument(0);
+            if ("ASSISTANT".equals(message.getRole())) {
+                assistantInsertThread.set(Thread.currentThread().getName());
+            }
+            return 1;
+        });
+        when(chatSessionMapper.updateById(any(ChatSessionDO.class))).thenAnswer(invocation -> {
+            sessionUpdateThread.set(Thread.currentThread().getName());
+            return 1;
+        });
+        when(qaTraceLogMapper.insert(any(QaTraceLogDO.class))).thenAnswer(invocation -> {
+            QaTraceLogDO traceLogDO = invocation.getArgument(0);
+            if ("STREAM_CANDIDATE".equals(traceLogDO.getStage())
+                    && "SUCCESS".equals(traceLogDO.getStatus())) {
+                successTraceThread.set(Thread.currentThread().getName());
+            }
+            return 1;
+        });
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("qwen-thinking"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("qwen-thinking")).thenReturn(true);
+        when(chatModelGateway.candidateInfo("qwen-thinking")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        Scheduler sourceScheduler = Schedulers.newSingle("think-source");
+        try {
+            when(chatModelGateway.streamThinkingChitchatByCandidate("qwen-thinking", "你好", List.of()))
+                    .thenReturn(Flux.just(
+                                    new StreamContent("思考中...", null),
+                                    new StreamContent(null, "你好！"))
+                            .publishOn(sourceScheduler));
+
+            List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                            .setSessionId(10L)
+                            .setMessage("你好")
+                            .setDeepThinking(true)
+                            .setTraceId("trace-thinking-offload"))
+                    .collectList()
+                    .block(Duration.ofSeconds(3));
+
+            assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                    .containsExactly("thinking_delta", "message_start", "delta", "message_end");
+            assertThat(assistantInsertThread.get()).startsWith("boundedElastic-");
+            assertThat(sessionUpdateThread.get()).startsWith("boundedElastic-");
+            assertThat(successTraceThread.get()).startsWith("boundedElastic-");
+        } finally {
+            sourceScheduler.dispose();
+        }
     }
 
     @Test

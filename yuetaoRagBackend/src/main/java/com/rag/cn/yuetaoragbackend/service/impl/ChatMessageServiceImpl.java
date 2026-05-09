@@ -39,12 +39,14 @@ import org.redisson.api.RedissonClient;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -669,17 +671,21 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     if (!sawDelta.get()) {
                         return Flux.error(new IllegalStateException("聊天模型流式返回为空"));
                     }
-                    chatModelGateway.markStreamingCandidateSuccess(candidateId);
-                    ChatModelInfoRecord modelInfo = chatModelGateway.candidateInfo(candidateId);
-                    ChatMessageDO assistantMessage = persistAssistantMessage(
-                            sessionId, userId, assistantSequenceNo, traceId, answerBuilder.toString(), modelInfo);
-                    updateSessionLastActiveAt(sessionId);
-                    writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                            "SUCCESS", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",attemptNo=" + attemptNo);
-                    Flux<ChatStreamEventResp> citationFlux = citations == null || citations.isEmpty()
-                            ? Flux.empty()
-                            : Flux.just(ChatStreamEventResp.citation(traceId, sessionId, citations));
-                    return citationFlux.concatWithValues(ChatStreamEventResp.messageEnd(traceId, sessionId, assistantMessage.getId()));
+                    return offloadBlocking(() -> {
+                        chatModelGateway.markStreamingCandidateSuccess(candidateId);
+                        ChatModelInfoRecord modelInfo = chatModelGateway.candidateInfo(candidateId);
+                        ChatMessageDO assistantMessage = persistAssistantMessage(
+                                sessionId, userId, assistantSequenceNo, traceId, answerBuilder.toString(), modelInfo);
+                        updateSessionLastActiveAt(sessionId);
+                        writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
+                                "SUCCESS", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",attemptNo=" + attemptNo);
+                        return assistantMessage;
+                    }).flatMapMany(assistantMessage -> {
+                        Flux<ChatStreamEventResp> citationFlux = citations == null || citations.isEmpty()
+                                ? Flux.empty()
+                                : Flux.just(ChatStreamEventResp.citation(traceId, sessionId, citations));
+                        return citationFlux.concatWithValues(ChatStreamEventResp.messageEnd(traceId, sessionId, assistantMessage.getId()));
+                    }).onErrorResume(ex -> handleStreamCompletionFailure(traceId, sessionId, candidateId, ex));
                 }))
                 .onErrorResume(ex -> {
                     chatModelGateway.markStreamingCandidateFailure(candidateId);
@@ -761,21 +767,25 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     if (!sawDelta.get()) {
                         return Flux.error(new IllegalStateException("聊天模型流式返回为空"));
                     }
-                    chatModelGateway.markStreamingCandidateSuccess(candidateId);
-                    ChatModelInfoRecord modelInfo = chatModelGateway.candidateInfo(candidateId);
-                    Long thinkingDurationMs = thinkingStartNanos.get() == null ? null
-                            : Math.max(1L, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - thinkingStartNanos.get()));
-                    ChatMessageDO assistantMessage = persistAssistantMessage(
-                            sessionId, userId, assistantSequenceNo, traceId,
-                            answerBuilder.toString(), modelInfo,
-                            thinkingBuilder.toString(), thinkingDurationMs);
-                    updateSessionLastActiveAt(sessionId);
-                    writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                            "SUCCESS", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",attemptNo=" + attemptNo + ",thinking=" + (thinkingDurationMs != null));
-                    Flux<ChatStreamEventResp> citationFlux = citations == null || citations.isEmpty()
-                            ? Flux.empty()
-                            : Flux.just(ChatStreamEventResp.citation(traceId, sessionId, citations));
-                    return citationFlux.concatWithValues(ChatStreamEventResp.messageEnd(traceId, sessionId, assistantMessage.getId()));
+                    return offloadBlocking(() -> {
+                        chatModelGateway.markStreamingCandidateSuccess(candidateId);
+                        ChatModelInfoRecord modelInfo = chatModelGateway.candidateInfo(candidateId);
+                        Long thinkingDurationMs = thinkingStartNanos.get() == null ? null
+                                : Math.max(1L, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - thinkingStartNanos.get()));
+                        ChatMessageDO assistantMessage = persistAssistantMessage(
+                                sessionId, userId, assistantSequenceNo, traceId,
+                                answerBuilder.toString(), modelInfo,
+                                thinkingBuilder.toString(), thinkingDurationMs);
+                        updateSessionLastActiveAt(sessionId);
+                        writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
+                                "SUCCESS", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",attemptNo=" + attemptNo + ",thinking=" + (thinkingDurationMs != null));
+                        return assistantMessage;
+                    }).flatMapMany(assistantMessage -> {
+                        Flux<ChatStreamEventResp> citationFlux = citations == null || citations.isEmpty()
+                                ? Flux.empty()
+                                : Flux.just(ChatStreamEventResp.citation(traceId, sessionId, citations));
+                        return citationFlux.concatWithValues(ChatStreamEventResp.messageEnd(traceId, sessionId, assistantMessage.getId()));
+                    }).onErrorResume(ex -> handleStreamCompletionFailure(traceId, sessionId, candidateId, ex));
                 }))
                 .onErrorResume(ex -> {
                     chatModelGateway.markStreamingCandidateFailure(candidateId);
@@ -831,6 +841,22 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             return source.timeout(firstTimeout, ignored -> Mono.never());
         }
         return source.timeout(Mono.never(), ignored -> Mono.delay(Duration.ofMillis(streamChunkIdleTimeoutMillis)));
+    }
+
+    private <T> Mono<T> offloadBlocking(Callable<T> callable) {
+        return Mono.fromCallable(callable)
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private Flux<ChatStreamEventResp> handleStreamCompletionFailure(String traceId, Long sessionId,
+                                                                    String candidateId, Throwable throwable) {
+        log.error("流式响应收尾持久化失败: traceId={}, sessionId={}, candidateId={}",
+                traceId, sessionId, candidateId, throwable);
+        return Flux.just(ChatStreamEventResp.error(
+                traceId,
+                sessionId,
+                BaseErrorCode.SERVICE_ERROR.code(),
+                "对话结果保存失败，请稍后重试"));
     }
 
     private ChatMessageDO persistAssistantMessage(Long sessionId, Long userId, int sequenceNo, String traceId,
