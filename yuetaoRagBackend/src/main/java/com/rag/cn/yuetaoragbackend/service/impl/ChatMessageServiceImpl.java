@@ -438,6 +438,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     @Override
     public ChatMessageDetailResp getChatMessage(Long id) {
         ChatMessageDO messageDO = chatMessageMapper.selectOne(Wrappers.<ChatMessageDO>lambdaQuery()
+                .eq(ChatMessageDO::getUserId, currentUserId())
                 .eq(ChatMessageDO::getId, id)
                 .eq(ChatMessageDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
         if (messageDO == null) {

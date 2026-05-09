@@ -3,6 +3,8 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -88,6 +90,20 @@ class ChatSessionServiceImplTests {
         ChatSessionDetailResp result = chatSessionService.getChatSession(3L);
 
         assertThat(result).isNull();
+    }
+
+    @Test
+    void shouldRejectDeleteWhenSessionBelongsToAnotherUser() {
+        ChatSessionDO session = new ChatSessionDO();
+        session.setId(4L);
+        session.setUserId(99L);
+        session.setDeleteFlag(DeleteFlagEnum.NORMAL.getCode());
+        lenient().when(chatSessionMapper.selectOne(any())).thenReturn(session);
+
+        assertThatThrownBy(() -> chatSessionService.deleteChatSession(4L))
+                .isInstanceOf(ClientException.class)
+                .hasMessage("无权访问该会话");
+        verify(chatSessionMapper, never()).updateById(any(ChatSessionDO.class));
     }
 
     @Test

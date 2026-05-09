@@ -13,12 +13,11 @@ import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionListResp;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import com.rag.cn.yuetaoragbackend.service.ChatSessionService;
-
-import java.util.List;
-
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
+
+import java.util.List;
 
 /**
  * @author zrq
@@ -46,10 +45,10 @@ public class ChatSessionServiceImpl extends ServiceImpl<ChatSessionMapper, ChatS
     }
 
     @Override
-    public List<ChatSessionListResp> listByUserId(Long userId) {
+    public List<ChatSessionListResp> listByUserId() {
         return chatSessionMapper.selectList(Wrappers.<ChatSessionDO>lambdaQuery()
                         .eq(ChatSessionDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())
-                        .eq(ChatSessionDO::getUserId, userId)
+                        .eq(ChatSessionDO::getUserId, currentUserId())
                         .orderByDesc(ChatSessionDO::getLastActiveAt))
                 .stream()
                 .map(each -> {
@@ -79,6 +78,16 @@ public class ChatSessionServiceImpl extends ServiceImpl<ChatSessionMapper, ChatS
 
     @Override
     public void deleteChatSession(Long id) {
+        ChatSessionDO sessionDO = chatSessionMapper.selectOne(Wrappers.<ChatSessionDO>lambdaQuery()
+                .eq(ChatSessionDO::getId, id)
+                .eq(ChatSessionDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
+        if (sessionDO == null) {
+            throw new ClientException("会话不存在");
+        }
+        Long userId = currentUserId();
+        if (!userId.equals(sessionDO.getUserId())) {
+            throw new ClientException("无权访问该会话");
+        }
         ChatSessionDO updateSession = new ChatSessionDO();
         updateSession.setId(id);
         updateSession.setDeleteFlag(DeleteFlagEnum.DELETED.getCode());

@@ -16,7 +16,7 @@ public interface ChatSessionService extends IService<ChatSessionDO> {
 
     ChatSessionCreateResp createChatSession(CreateChatSessionReq requestParam);
 
-    List<ChatSessionListResp> listByUserId(Long userId);
+    List<ChatSessionListResp> listByUserId();
 
     ChatSessionDetailResp getChatSession(Long id);
 

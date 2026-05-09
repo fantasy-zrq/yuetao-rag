@@ -7,16 +7,11 @@ import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionListResp;
 import com.rag.cn.yuetaoragbackend.framework.convention.Result;
 import com.rag.cn.yuetaoragbackend.framework.web.Results;
 import com.rag.cn.yuetaoragbackend.service.ChatSessionService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.*;
+
 import java.util.List;
 import java.util.Map;
-import lombok.RequiredArgsConstructor;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
 
 /**
  * @author zrq
@@ -35,8 +30,8 @@ public class ChatSessionController {
     }
 
     @GetMapping("/list")
-    public Result<List<ChatSessionListResp>> listChatSessions(@RequestParam("userId") Long userId) {
-        return Results.success(chatSessionService.listByUserId(userId));
+    public Result<List<ChatSessionListResp>> listChatSessions() {
+        return Results.success(chatSessionService.listByUserId());
     }
 
     @GetMapping("/detail/{id}")
