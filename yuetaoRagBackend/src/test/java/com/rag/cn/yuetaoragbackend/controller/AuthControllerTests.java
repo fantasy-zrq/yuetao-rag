@@ -81,6 +81,24 @@ class AuthControllerTests {
         assertThat(body).contains("用户名或密码错误");
     }
 
+    @Test
+    void shouldRejectBlankUsernameByValidation() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "username":"   ",
+                                  "password":"right-password"
+                                }
+                                """))
+                .andReturn();
+
+        String body = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(mvcResult.getResponse().getStatus()).isEqualTo(200);
+        assertThat(body).contains("\"code\":\"A000001\"");
+        assertThat(body).contains("用户名不能为空");
+    }
+
     private void persistUser(String username, String passwordHash) {
         jdbcTemplate.update("""
                         insert into t_user

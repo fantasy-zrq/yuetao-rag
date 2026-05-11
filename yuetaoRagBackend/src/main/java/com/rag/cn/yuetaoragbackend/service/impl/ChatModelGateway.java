@@ -40,7 +40,7 @@ import java.util.regex.Pattern;
 @RequiredArgsConstructor
 public class ChatModelGateway {
 
-    private static final Pattern JSON_BLOCK_PATTERN = Pattern.compile("\\{.*}", Pattern.DOTALL);
+    private static final Pattern JSON_BLOCK_PATTERN = Pattern.compile("\\{.*?}", Pattern.DOTALL);
 
     private final AiProperties aiProperties;
     private final RoutingChatModel chatModel;
@@ -84,8 +84,13 @@ public class ChatModelGateway {
     }
 
     public List<String> streamingCandidateIds() {
+        List<String> streamingEnabledIds = aiProperties.getChat().getCandidates().stream()
+                .filter(each -> Boolean.TRUE.equals(each.getStreamingEnabled()) && Boolean.TRUE.equals(each.getEnabled()))
+                .map(AiProperties.ChatCandidateProperties::getId)
+                .toList();
         return chatModel.candidatesForStreaming().stream()
                 .map(ChatModelCandidateRuntimeRecord::id)
+                .filter(streamingEnabledIds::contains)
                 .toList();
     }
 
@@ -307,7 +312,8 @@ public class ChatModelGateway {
             return new StreamContent(null, null);
         }
         String reasoning = null;
-        Object reasoningObj = response.getResult().getOutput().getMetadata().get("reasoningContent");
+        Map<String, Object> metadata = response.getResult().getOutput().getMetadata();
+        Object reasoningObj = metadata != null ? metadata.get("reasoningContent") : null;
         if (reasoningObj instanceof String rs && StringUtils.hasText(rs)) {
             reasoning = rs;
         }

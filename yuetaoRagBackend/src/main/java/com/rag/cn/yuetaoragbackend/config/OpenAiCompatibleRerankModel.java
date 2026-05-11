@@ -7,7 +7,6 @@ import com.rag.cn.yuetaoragbackend.framework.exception.RemoteException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.util.StringUtils;
@@ -17,13 +16,24 @@ import org.springframework.web.client.RestClient;
  * @author zrq
  * 2026/04/29 18:55
  */
-@RequiredArgsConstructor
 public class OpenAiCompatibleRerankModel {
 
     private final String baseUrl;
     private final String apiKey;
     private final String rerankPath;
     private final String modelName;
+    private final RestClient restClient;
+
+    public OpenAiCompatibleRerankModel(String baseUrl, String apiKey, String rerankPath, String modelName) {
+        this.baseUrl = baseUrl;
+        this.apiKey = apiKey;
+        this.rerankPath = rerankPath;
+        this.modelName = modelName;
+        this.restClient = RestClient.builder()
+                .baseUrl(StringUtils.hasText(baseUrl) ? baseUrl : "")
+                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + (apiKey == null ? "" : apiKey))
+                .build();
+    }
 
     public List<RerankResultRecord> rerank(String query, List<String> documents, int topN) {
         if (!StringUtils.hasText(baseUrl) || !StringUtils.hasText(apiKey)
@@ -37,17 +47,13 @@ public class OpenAiCompatibleRerankModel {
 
         LinkedHashMap<String, Object> parameters = new LinkedHashMap<>();
         parameters.put("top_n", topN);
-        parameters.put("return_documents", Boolean.TRUE);
+        parameters.put("return_documents", Boolean.FALSE);
 
         LinkedHashMap<String, Object> requestBody = new LinkedHashMap<>();
         requestBody.put("model", modelName);
         requestBody.put("input", input);
         requestBody.put("parameters", parameters);
 
-        RestClient restClient = RestClient.builder()
-                .baseUrl(baseUrl)
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
-                .build();
         JsonNode root = restClient.post()
                 .uri(rerankPath)
                 .contentType(MediaType.APPLICATION_JSON)

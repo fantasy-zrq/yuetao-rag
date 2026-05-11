@@ -272,7 +272,7 @@ class ChatMessageControllerTests {
 
         JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
         assertThat(json.path("code").asText()).isEqualTo("A000001");
-        assertThat(json.path("message").asText()).contains("会话ID和消息内容不能为空");
+        assertThat(json.path("message").asText()).contains("消息内容不能为空");
     }
 
     @Test

@@ -166,6 +166,24 @@ class ChatMessageServiceImplTests {
     }
 
     @Test
+    void shouldChatNormallyWhenTraceWriteFails() {
+        when(qaTraceLogMapper.insert(any(QaTraceLogDO.class)))
+                .thenThrow(new RuntimeException("trace-write-failed"));
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.generateChitchatAnswer("你好", List.of()))
+                .thenReturn("你好，请问有什么可以帮你？");
+        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        ChatResp response = chatMessageService.chat(new ChatReq()
+                .setSessionId(10L)
+                .setMessage("你好"));
+
+        assertThat(response.getIntentType()).isEqualTo("CHITCHAT");
+        assertThat(response.getAnswer()).contains("你好");
+        verify(chatMessageMapper, times(2)).insert(any(ChatMessageDO.class));
+    }
+
+    @Test
     void shouldContinueAllocatingAfterLatestDbSequenceWhenRedisCounterBehind() {
         when(chatMessageMapper.selectPage(any(), any())).thenAnswer(invocation -> {
             Page<ChatMessageDO> page = invocation.getArgument(0);
@@ -387,6 +405,34 @@ class ChatMessageServiceImplTests {
         assertThat(captor.getAllValues())
                 .extracting(QaTraceLogDO::getLatencyMs)
                 .allMatch(value -> value != null && value > 0);
+    }
+
+    @Test
+    void shouldStreamNormallyWhenSuccessTraceWriteFails() {
+        when(qaTraceLogMapper.insert(any(QaTraceLogDO.class))).thenAnswer(invocation -> {
+            QaTraceLogDO traceLogDO = invocation.getArgument(0);
+            if ("STREAM_CANDIDATE".equals(traceLogDO.getStage())
+                    && "SUCCESS".equals(traceLogDO.getStatus())) {
+                throw new RuntimeException("trace-write-failed");
+            }
+            return 1;
+        });
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
+        when(chatModelGateway.streamChitchatByCandidate("candidate-a", "你好", List.of()))
+                .thenReturn(Flux.just("你", "好"));
+        when(chatModelGateway.candidateInfo("candidate-a")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setMessage("你好")
+                        .setTraceId("trace-write-fail"))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsExactly("message_start", "delta", "delta", "message_end");
     }
 
     @Test

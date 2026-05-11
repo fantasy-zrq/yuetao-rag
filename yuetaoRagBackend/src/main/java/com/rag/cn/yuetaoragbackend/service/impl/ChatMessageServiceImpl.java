@@ -902,15 +902,20 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         if (!Boolean.TRUE.equals(traceProperties.getEnabled())) {
             return;
         }
-        QaTraceLogDO traceLogDO = new QaTraceLogDO()
-                .setTraceId(traceId)
-                .setSessionId(sessionId)
-                .setUserId(userId)
-                .setStage(stage)
-                .setStatus(status)
-                .setLatencyMs(latencyMs)
-                .setPayloadRef(Boolean.TRUE.equals(traceProperties.getLogPayload()) ? shorten(payload, 512) : null);
-        qaTraceLogMapper.insert(traceLogDO);
+        try {
+            QaTraceLogDO traceLogDO = new QaTraceLogDO()
+                    .setTraceId(traceId)
+                    .setSessionId(sessionId)
+                    .setUserId(userId)
+                    .setStage(stage)
+                    .setStatus(status)
+                    .setLatencyMs(latencyMs)
+                    .setPayloadRef(Boolean.TRUE.equals(traceProperties.getLogPayload()) ? shorten(payload, 512) : null);
+            qaTraceLogMapper.insert(traceLogDO);
+        } catch (Exception ex) {
+            log.warn("写入链路追踪日志失败: traceId={}, sessionId={}, stage={}, status={}",
+                    traceId, sessionId, stage, status, ex);
+        }
     }
 
     private long elapsedMillis(long startNanos) {

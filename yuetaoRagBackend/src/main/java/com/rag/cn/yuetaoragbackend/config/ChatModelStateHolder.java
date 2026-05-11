@@ -12,10 +12,10 @@ import lombok.Getter;
 @Getter
 public class ChatModelStateHolder {
 
-    private ChatModelCircuitStateEnum state = ChatModelCircuitStateEnum.CLOSED;
-    private int consecutiveFailures = 0;
-    private Instant openUntil;
-    private int halfOpenProbeCount = 0;
+    private volatile ChatModelCircuitStateEnum state = ChatModelCircuitStateEnum.CLOSED;
+    private volatile int consecutiveFailures = 0;
+    private volatile Instant openUntil;
+    private volatile int halfOpenProbeCount = 0;
 
     public synchronized boolean tryAcquire(AiProperties.CircuitBreakerProperties properties) {
         if (state == ChatModelCircuitStateEnum.CLOSED) {

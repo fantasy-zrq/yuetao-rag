@@ -22,6 +22,7 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkVectorMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentChunkLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentDepartmentAuthMapper;
+import com.rag.cn.yuetaoragbackend.dao.mapper.projection.DocumentChunkCountProjection;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateKnowledgeDocumentReq;
@@ -53,8 +54,10 @@ import org.springframework.util.StringUtils;
 
 import java.io.IOException;
 import java.util.Date;
+import java.util.Map;
 import java.util.Objects;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * @author zrq
@@ -226,15 +229,23 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
 
     @Override
     public List<KnowledgeDocumentListResp> listByKnowledgeBaseId(Long knowledgeBaseId) {
-        return knowledgeDocumentMapper.selectList(Wrappers.<KnowledgeDocumentDO>lambdaQuery()
-                        .eq(KnowledgeDocumentDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())
-                        .eq(KnowledgeDocumentDO::getKnowledgeBaseId, knowledgeBaseId)
-                        .orderByDesc(KnowledgeDocumentDO::getUpdateTime))
-                .stream()
+        List<KnowledgeDocumentDO> documentDOList = knowledgeDocumentMapper.selectList(Wrappers.<KnowledgeDocumentDO>lambdaQuery()
+                .eq(KnowledgeDocumentDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())
+                .eq(KnowledgeDocumentDO::getKnowledgeBaseId, knowledgeBaseId)
+                .orderByDesc(KnowledgeDocumentDO::getUpdateTime));
+        if (documentDOList.isEmpty()) {
+            return List.of();
+        }
+        List<Long> documentIds = documentDOList.stream().map(KnowledgeDocumentDO::getId).toList();
+        Map<Long, Long> chunkCountMap = chunkMapper.countByDocumentIds(documentIds).stream()
+                .collect(Collectors.toMap(
+                        DocumentChunkCountProjection::getDocumentId,
+                        DocumentChunkCountProjection::getCount));
+        return documentDOList.stream()
                 .map(each -> {
                     KnowledgeDocumentListResp response = new KnowledgeDocumentListResp();
                     BeanUtils.copyProperties(each, response);
-                    response.setChunkCount(countChunks(each.getId()));
+                    response.setChunkCount(Math.toIntExact(chunkCountMap.getOrDefault(each.getId(), 0L)));
                     return response;
                 })
                 .toList();

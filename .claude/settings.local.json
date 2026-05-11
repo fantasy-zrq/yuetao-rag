@@ -18,7 +18,9 @@
       "Bash(javap -p org/springframework/ai/openai/OpenAiChatOptions.class)",
       "Bash(npm run *)",
       "Bash(javap -cp /root/.m2/repository/org/springframework/ai/spring-ai-openai/1.1.4/spring-ai-openai-1.1.4.jar -p org.springframework.ai.openai.OpenAiChatOptions)",
-      "Bash(javap -cp /root/.m2/repository/org/springframework/ai/spring-ai-openai/1.1.4/spring-ai-openai-1.1.4.jar -p 'org.springframework.ai.openai.OpenAiChatOptions$Builder')"
+      "Bash(javap -cp /root/.m2/repository/org/springframework/ai/spring-ai-openai/1.1.4/spring-ai-openai-1.1.4.jar -p 'org.springframework.ai.openai.OpenAiChatOptions$Builder')",
+      "Bash(ls mvnw *)",
+      "Bash(ls pom.xml)"
     ]
   }
 }

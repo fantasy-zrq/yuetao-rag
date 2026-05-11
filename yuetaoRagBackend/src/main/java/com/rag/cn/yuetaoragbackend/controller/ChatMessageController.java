@@ -10,6 +10,7 @@ import com.rag.cn.yuetaoragbackend.dto.resp.ChatResp;
 import com.rag.cn.yuetaoragbackend.framework.convention.Result;
 import com.rag.cn.yuetaoragbackend.framework.web.Results;
 import com.rag.cn.yuetaoragbackend.service.ChatMessageService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -29,17 +30,17 @@ public class ChatMessageController {
     private final ChatMessageService chatMessageService;
 
     @PostMapping("/chat")
-    public Result<ChatResp> chat(@RequestBody ChatReq requestParam) {
+    public Result<ChatResp> chat(@Valid @RequestBody ChatReq requestParam) {
         return Results.success(chatMessageService.chat(requestParam));
     }
 
     @PostMapping(value = "/chatstream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter chatStream(@RequestBody ChatStreamReq requestParam) {
+    public SseEmitter chatStream(@Valid @RequestBody ChatStreamReq requestParam) {
         return chatMessageService.chatStream(requestParam);
     }
 
     @PostMapping("/create")
-    public Result<ChatMessageCreateResp> createChatMessage(@RequestBody CreateChatMessageReq requestParam) {
+    public Result<ChatMessageCreateResp> createChatMessage(@Valid @RequestBody CreateChatMessageReq requestParam) {
         return Results.success(chatMessageService.createChatMessage(requestParam));
     }
 

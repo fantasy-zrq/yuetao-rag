@@ -1,5 +1,6 @@
 package com.rag.cn.yuetaoragbackend.dto.req;
 
+import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 import lombok.experimental.Accessors;
 
@@ -13,6 +14,7 @@ import java.util.List;
 @Accessors(chain = true)
 public class UpdateKnowledgeDocumentReq {
 
+    @NotNull(message = "文档ID不能为空")
     private Long id;
 
     private String title;

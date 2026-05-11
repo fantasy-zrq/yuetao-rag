@@ -1,5 +1,6 @@
 package com.rag.cn.yuetaoragbackend.dto.req;
 
+import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import lombok.experimental.Accessors;
 
@@ -12,6 +13,7 @@ import lombok.experimental.Accessors;
 public class CreateKnowledgeBaseReq {
 
     /** 知识库名称。 */
+    @NotBlank(message = "知识库名称不能为空")
     private String name;
 
     /** 知识库描述。 */
@@ -24,5 +26,6 @@ public class CreateKnowledgeBaseReq {
     private String embeddingModel;
 
     /** RustFS bucket 名称。 */
+    @NotBlank(message = "集合名称不能为空")
     private String collectionName;
 }

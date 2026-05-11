@@ -12,6 +12,7 @@ import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentListResp;
 import com.rag.cn.yuetaoragbackend.framework.convention.Result;
 import com.rag.cn.yuetaoragbackend.framework.web.Results;
 import com.rag.cn.yuetaoragbackend.service.KnowledgeDocumentService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -36,24 +37,24 @@ public class KnowledgeDocumentController {
     }
 
     @PostMapping("/update")
-    public Result<KnowledgeDocumentDetailResp> updateKnowledgeDocument(@RequestBody UpdateKnowledgeDocumentReq requestParam) {
+    public Result<KnowledgeDocumentDetailResp> updateKnowledgeDocument(@Valid @RequestBody UpdateKnowledgeDocumentReq requestParam) {
         return Results.success(knowledgeDocumentService.updateKnowledgeDocument(requestParam));
     }
 
     @PostMapping("/delete")
-    public Result<Void> deleteKnowledgeDocument(@RequestBody DeleteKnowledgeDocumentReq requestParam) {
+    public Result<Void> deleteKnowledgeDocument(@Valid @RequestBody DeleteKnowledgeDocumentReq requestParam) {
         knowledgeDocumentService.deleteKnowledgeDocument(requestParam);
         return Results.success();
     }
 
     @PostMapping("/split")
-    public Result<Void> splitKnowledgeDocument(@RequestBody SplitKnowledgeDocumentReq requestParam) {
+    public Result<Void> splitKnowledgeDocument(@Valid @RequestBody SplitKnowledgeDocumentReq requestParam) {
         knowledgeDocumentService.splitKnowledgeDocument(requestParam);
         return Results.success();
     }
 
     @PostMapping("/status")
-    public Result<KnowledgeDocumentDetailResp> updateKnowledgeDocumentStatus(@RequestBody UpdateKnowledgeDocumentStatusReq requestParam) {
+    public Result<KnowledgeDocumentDetailResp> updateKnowledgeDocumentStatus(@Valid @RequestBody UpdateKnowledgeDocumentStatusReq requestParam) {
         return Results.success(knowledgeDocumentService.updateKnowledgeDocumentStatus(requestParam));
     }
 

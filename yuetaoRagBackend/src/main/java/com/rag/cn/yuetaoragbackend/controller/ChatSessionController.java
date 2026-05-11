@@ -1,17 +1,18 @@
 package com.rag.cn.yuetaoragbackend.controller;
 
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatSessionReq;
+import com.rag.cn.yuetaoragbackend.dto.req.DeleteChatSessionReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionCreateResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionDetailResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatSessionListResp;
 import com.rag.cn.yuetaoragbackend.framework.convention.Result;
 import com.rag.cn.yuetaoragbackend.framework.web.Results;
 import com.rag.cn.yuetaoragbackend.service.ChatSessionService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * @author zrq
@@ -25,7 +26,7 @@ public class ChatSessionController {
     private final ChatSessionService chatSessionService;
 
     @PostMapping("/create")
-    public Result<ChatSessionCreateResp> createChatSession(@RequestBody CreateChatSessionReq requestParam) {
+    public Result<ChatSessionCreateResp> createChatSession(@Valid @RequestBody CreateChatSessionReq requestParam) {
         return Results.success(chatSessionService.createChatSession(requestParam));
     }
 
@@ -40,8 +41,8 @@ public class ChatSessionController {
     }
 
     @PostMapping("/delete")
-    public Result<Void> deleteChatSession(@RequestBody Map<String, Long> requestParam) {
-        chatSessionService.deleteChatSession(requestParam.get("id"));
+    public Result<Void> deleteChatSession(@Valid @RequestBody DeleteChatSessionReq requestParam) {
+        chatSessionService.deleteChatSession(requestParam.getId());
         return Results.success();
     }
 }

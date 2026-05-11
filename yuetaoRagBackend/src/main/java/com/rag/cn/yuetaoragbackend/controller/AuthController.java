@@ -13,6 +13,7 @@ import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import com.rag.cn.yuetaoragbackend.framework.security.PasswordHashVerifier;
 import com.rag.cn.yuetaoragbackend.framework.web.Results;
 import com.rag.cn.yuetaoragbackend.framework.convention.Result;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.util.StringUtils;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -30,7 +31,7 @@ public class AuthController {
     private final UserMapper userMapper;
 
     @PostMapping("/login")
-    public Result<LoginResp> login(@RequestBody LoginReq requestParam) {
+    public Result<LoginResp> login(@Valid @RequestBody LoginReq requestParam) {
         if (requestParam == null || !StringUtils.hasText(requestParam.getUsername())
                 || !StringUtils.hasText(requestParam.getPassword())) {
             throw new ClientException("用户名或密码不能为空");

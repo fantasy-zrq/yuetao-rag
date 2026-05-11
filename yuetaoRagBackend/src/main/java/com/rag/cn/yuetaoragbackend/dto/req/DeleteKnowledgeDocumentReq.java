@@ -1,5 +1,6 @@
 package com.rag.cn.yuetaoragbackend.dto.req;
 
+import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 import lombok.experimental.Accessors;
 
@@ -11,5 +12,6 @@ import lombok.experimental.Accessors;
 @Accessors(chain = true)
 public class DeleteKnowledgeDocumentReq {
 
+    @NotNull(message = "文档ID不能为空")
     private Long id;
 }

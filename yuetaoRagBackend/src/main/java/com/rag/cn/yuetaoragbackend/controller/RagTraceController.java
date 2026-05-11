@@ -25,7 +25,7 @@ public class RagTraceController {
     private final RagTraceService ragTraceService;
 
     @GetMapping("/runs")
-    public Result<PageResp<RagTraceRunResp>> pageRuns(@RequestBody PageRunsReq requestParam) {
+    public Result<PageResp<RagTraceRunResp>> pageRuns(@ModelAttribute PageRunsReq requestParam) {
         return Results.success(ragTraceService.pageRuns(requestParam));
     }
 

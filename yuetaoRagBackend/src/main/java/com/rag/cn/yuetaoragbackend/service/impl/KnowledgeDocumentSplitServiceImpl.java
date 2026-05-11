@@ -64,6 +64,10 @@ public class KnowledgeDocumentSplitServiceImpl {
         if (documentDO == null) {
             throw new ClientException("文档不存在或已删除：" + documentId);
         }
+        if (ParseStatusEnum.FAILED.getCode().equals(documentDO.getParseStatus())) {
+            log.warn("跳过已失败文档的切片重试: documentId={}, chunkLogId={}", documentId, chunkLogId);
+            return;
+        }
         byte[] content = fileService.getObject(documentDO.getStorageBucket(), documentDO.getStorageKey());
         String text = parseDocument(content, documentDO.getTitle());
         List<String> chunkTexts = splitTextByMode(text, documentDO.getChunkMode(), documentDO.getChunkConfig());

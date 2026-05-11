@@ -9,9 +9,8 @@ import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeBaseListResp;
 import com.rag.cn.yuetaoragbackend.framework.convention.Result;
 import com.rag.cn.yuetaoragbackend.framework.web.Results;
 import com.rag.cn.yuetaoragbackend.service.KnowledgeBaseService;
-
 import java.util.List;
-
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -32,17 +31,17 @@ public class KnowledgeBaseController {
     private final KnowledgeBaseService knowledgeBaseService;
 
     @PostMapping("/create")
-    public Result<KnowledgeBaseCreateResp> createKnowledgeBase(@RequestBody CreateKnowledgeBaseReq requestParam) {
+    public Result<KnowledgeBaseCreateResp> createKnowledgeBase(@Valid @RequestBody CreateKnowledgeBaseReq requestParam) {
         return Results.success(knowledgeBaseService.createKnowledgeBase(requestParam));
     }
 
     @PostMapping("/update")
-    public Result<KnowledgeBaseDetailResp> updateKnowledgeBase(@RequestBody UpdateKnowledgeBaseReq requestParam) {
+    public Result<KnowledgeBaseDetailResp> updateKnowledgeBase(@Valid @RequestBody UpdateKnowledgeBaseReq requestParam) {
         return Results.success(knowledgeBaseService.updateKnowledgeBase(requestParam));
     }
 
     @PostMapping("/delete")
-    public Result<Void> deleteKnowledgeBase(@RequestBody DeleteKnowledgeBaseReq requestParam) {
+    public Result<Void> deleteKnowledgeBase(@Valid @RequestBody DeleteKnowledgeBaseReq requestParam) {
         knowledgeBaseService.deleteKnowledgeBase(requestParam);
         return Results.success();
     }
