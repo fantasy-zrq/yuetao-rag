@@ -70,6 +70,13 @@ public class ChatModelGateway {
         return chatCompletion("", List.of(userMessage(prompt)));
     }
 
+    public String generateSummary(List<String> historyTexts, int maxChars) {
+        String prompt = renderPrompt("prompt/conversation-summary.st", Map.of(
+                "history", renderHistory(historyTexts),
+                "summary_max_chars", String.valueOf(maxChars)));
+        return chatCompletion("", List.of(userMessage(prompt)));
+    }
+
     public String generateChitchatAnswer(String question, List<String> recentMessages) {
         String prompt = renderPrompt("prompt/answer-chat-system.st", Map.of(
                 "history", renderHistory(recentMessages),

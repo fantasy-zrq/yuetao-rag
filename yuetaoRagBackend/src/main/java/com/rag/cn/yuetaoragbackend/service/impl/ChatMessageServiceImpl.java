@@ -27,6 +27,8 @@ import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import com.rag.cn.yuetaoragbackend.service.ChatMessageService;
+import com.rag.cn.yuetaoragbackend.service.ChatSessionSummaryService;
+import com.rag.cn.yuetaoragbackend.dao.entity.ChatSessionSummaryDO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
@@ -77,6 +79,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     private final AiProperties aiProperties;
     private final RedissonClient redissonClient;
     private final ExecutorService chatStreamExecutor;
+    private final ChatSessionSummaryService chatSessionSummaryService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -92,8 +95,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
         String traceId = StringUtils.hasText(requestParam.getTraceId()) ? requestParam.getTraceId() : UUID.randomUUID().toString();
 
-        List<ChatMessageDO> recentMessages = loadRecentMessages(requestParam.getSessionId());
-        List<String> historyTexts = toHistoryTexts(recentMessages);
+        List<String> historyTexts = loadConversationContext(requestParam.getSessionId());
 
         long intentStart = System.nanoTime();
         String intentType = chatModelGateway.classifyQuestionIntent(requestParam.getMessage(), historyTexts);
@@ -187,6 +189,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         updateSession.setLastActiveAt(new Date());
         chatSessionMapper.updateById(updateSession);
 
+        chatSessionSummaryService.maybeSummarize(requestParam.getSessionId(), sequenceReservation.assistantSequenceNo());
+
         return new ChatResp()
                 .setSessionId(requestParam.getSessionId())
                 .setUserMessageId(userMessage.getId())
@@ -254,8 +258,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             ChatSessionDO sessionDO = requireSession(requestParam.getSessionId(), userId);
             UserDO userDO = requireUser(userId);
             String traceId = StringUtils.hasText(requestParam.getTraceId()) ? requestParam.getTraceId() : UUID.randomUUID().toString();
-            List<ChatMessageDO> recentMessages = loadRecentMessages(requestParam.getSessionId());
-            List<String> historyTexts = toHistoryTexts(recentMessages);
+            List<String> historyTexts = loadConversationContext(requestParam.getSessionId());
 
             long intentStart = System.nanoTime();
             String intentType = chatModelGateway.classifyQuestionIntent(requestParam.getMessage(), historyTexts);
@@ -523,6 +526,20 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return recentMessages;
     }
 
+    private List<String> loadConversationContext(Long sessionId) {
+        ChatSessionSummaryDO summary = chatSessionSummaryService.loadLatestSummary(sessionId);
+        List<ChatMessageDO> recentMessages = loadRecentMessages(sessionId);
+        List<String> recentTexts = toHistoryTexts(recentMessages);
+        if (summary == null) {
+            return recentTexts;
+        }
+        List<String> combined = new java.util.ArrayList<>();
+        combined.add("[历史摘要]：" + summary.getSummaryText());
+        combined.add("--- 以下为最近对话 ---");
+        combined.addAll(recentTexts);
+        return combined;
+    }
+
     private SequenceReservation reserveMessageSequences(Long sessionId) {
         long latestSequenceNo = loadLatestSequenceNo(sessionId);
         RAtomicLong sequenceCounter = redissonClient.getAtomicLong(messageSequenceCounterKey(sessionId));
@@ -612,6 +629,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         ChatMessageDO assistantMessage = persistAssistantMessage(
                 sessionDO.getId(), userId, assistantSequenceNo, traceId, answer, modelInfo);
         updateSessionLastActiveAt(sessionDO.getId());
+        chatSessionSummaryService.maybeSummarize(sessionDO.getId(), assistantSequenceNo);
         writeTrace(traceId, sessionDO.getId(), userId, "GENERATE", "SUCCESS", elapsedMillis(generateStart), "intent=STATIC_REFUSAL");
         return Flux.just(
                 ChatStreamEventResp.messageStart(traceId, sessionDO.getId(), candidateId, 1),
@@ -677,6 +695,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                         ChatMessageDO assistantMessage = persistAssistantMessage(
                                 sessionId, userId, assistantSequenceNo, traceId, answerBuilder.toString(), modelInfo);
                         updateSessionLastActiveAt(sessionId);
+                        chatSessionSummaryService.maybeSummarize(sessionId, assistantSequenceNo);
                         writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
                                 "SUCCESS", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",attemptNo=" + attemptNo);
                         return assistantMessage;
@@ -777,6 +796,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                 answerBuilder.toString(), modelInfo,
                                 thinkingBuilder.toString(), thinkingDurationMs);
                         updateSessionLastActiveAt(sessionId);
+                        chatSessionSummaryService.maybeSummarize(sessionId, assistantSequenceNo);
                         writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
                                 "SUCCESS", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",attemptNo=" + attemptNo + ",thinking=" + (thinkingDurationMs != null));
                         return assistantMessage;
