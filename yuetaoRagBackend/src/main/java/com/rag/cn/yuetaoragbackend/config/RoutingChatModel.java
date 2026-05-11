@@ -45,21 +45,26 @@ public class RoutingChatModel implements ChatModel {
         RuntimeException lastException = null;
         for (ChatModelCandidateRuntimeRecord candidate : candidates) {
             if (!candidate.tryAcquire(circuitBreakerProperties)) {
+                log.warn("[MODEL] 候选模型熔断跳过: candidateId={}, provider={}, model={}, state={}",
+                        candidate.id(), candidate.provider(), candidate.modelName(), candidate.state());
                 continue;
             }
             try {
                 ChatResponse response = candidate.chatModel().call(prompt);
                 candidate.onSuccess();
                 lastSuccessfulCandidate = candidate;
+                log.info("[MODEL] 候选模型调用成功: candidateId={}, provider={}, model={}",
+                        candidate.id(), candidate.provider(), candidate.modelName());
                 return response;
             } catch (RuntimeException ex) {
                 candidate.onFailure(circuitBreakerProperties);
                 lastException = ex;
-                log.warn("ChatModel 调用失败，尝试切换下一个候选: candidateId={}, provider={}, model={}",
-                        candidate.id(), candidate.provider(), candidate.modelName(), ex);
+                log.warn("[MODEL] 候选模型调用失败，尝试切换下一个: candidateId={}, provider={}, model={}, state={}, error={}",
+                        candidate.id(), candidate.provider(), candidate.modelName(), candidate.state(), ex.getMessage());
             }
         }
         if (lastException != null) {
+            log.error("[MODEL] 所有候选模型均已失败，抛出最后一个异常");
             throw lastException;
         }
         throw new RemoteException("当前没有可用的聊天模型候选", BaseErrorCode.REMOTE_ERROR);

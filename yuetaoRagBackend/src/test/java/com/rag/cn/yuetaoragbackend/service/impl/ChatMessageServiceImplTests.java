@@ -21,6 +21,7 @@ import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
+import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatMessageDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatSessionDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.QaTraceLogDO;
@@ -29,6 +30,8 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.ChatMessageMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChatSessionMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.QaTraceLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
+import com.rag.cn.yuetaoragbackend.service.ChatSessionSummaryService;
+import com.rag.cn.yuetaoragbackend.service.IntentNodeService;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatReq;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
@@ -90,6 +93,12 @@ class ChatMessageServiceImplTests {
     @Mock
     private ExecutorService chatStreamExecutor;
 
+    @Mock
+    private ChatSessionSummaryService chatSessionSummaryService;
+
+    @Mock
+    private IntentNodeService intentNodeService;
+
     private MemoryProperties memoryProperties;
 
     private TraceProperties traceProperties;
@@ -130,7 +139,9 @@ class ChatMessageServiceImplTests {
                 traceProperties,
                 aiProperties,
                 redissonClient,
-                chatStreamExecutor);
+                chatStreamExecutor,
+                chatSessionSummaryService,
+                intentNodeService);
         lenient().when(chatSessionMapper.selectOne(any())).thenReturn(session());
         lenient().when(userMapper.selectOne(any())).thenReturn(user());
         UserContext.set(LoginUser.builder().userId("20").build());
@@ -215,15 +226,15 @@ class ChatMessageServiceImplTests {
     void shouldChatWithKnowledgeCitationsForKnowledgeIntent() {
         when(chatModelGateway.classifyQuestionIntent("商品退货规则是什么", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("商品退货规则是什么", List.of())).thenReturn("商品退货规则");
-        List<RagRetrievalService.RetrievedChunk> recalledChunks = List.of(
-                new RagRetrievalService.RetrievedChunk(101L, 201L, "商品退货规则", 3,
+        List<RetrievedChunk> recalledChunks = List.of(
+                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0D, 0D));
-        List<RagRetrievalService.RetrievedChunk> rerankedChunks = List.of(
-                new RagRetrievalService.RetrievedChunk(101L, 201L, "商品退货规则", 3,
+        List<RetrievedChunk> rerankedChunks = List.of(
+                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0.50D, 0.71D));
         when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(recalledChunks);
         when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(rerankedChunks);
-        when(chatModelGateway.generateAnswer(any(String.class), any(String.class), any(List.class), any(List.class)))
+        when(chatModelGateway.generateAnswer(any(String.class), any(String.class), any(List.class), any(List.class), any()))
                 .thenReturn("商品支持7天无理由退货[1]。");
         when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
@@ -256,7 +267,7 @@ class ChatMessageServiceImplTests {
         assertThat(response.getKnowledgeHit()).isFalse();
         assertThat(response.getAnswer()).isEqualTo("当前知识库中没有该方面的内容，暂时无法回答这个问题。");
         assertThat(response.getCitations()).isEmpty();
-        verify(chatModelGateway, never()).generateAnswer(any(String.class), any(String.class), any(List.class), any(List.class));
+        verify(chatModelGateway, never()).generateAnswer(any(String.class), any(String.class), any(List.class), any(List.class), any());
     }
 
     @Test
@@ -520,16 +531,16 @@ class ChatMessageServiceImplTests {
     void shouldStreamThinkingWithKnowledgeCitations() {
         when(chatModelGateway.classifyQuestionIntent("退货规则", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("退货规则", List.of())).thenReturn("退货规则");
-        List<RagRetrievalService.RetrievedChunk> recalledChunks = List.of(
-                new RagRetrievalService.RetrievedChunk(101L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0D, 0D));
-        List<RagRetrievalService.RetrievedChunk> rerankedChunks = List.of(
-                new RagRetrievalService.RetrievedChunk(101L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0.50D, 0.71D));
+        List<RetrievedChunk> recalledChunks = List.of(
+                new RetrievedChunk(101L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0D, 0D));
+        List<RetrievedChunk> rerankedChunks = List.of(
+                new RetrievedChunk(101L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0.50D, 0.71D));
         when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(recalledChunks);
         when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(rerankedChunks);
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("qwen-thinking"));
         when(chatModelGateway.tryAcquireStreamingCandidate("qwen-thinking")).thenReturn(true);
         when(chatModelGateway.streamThinkingKnowledgeAnswerByCandidate(
-                eq("qwen-thinking"), eq("退货规则"), eq("退货规则"), any(List.class), any(List.class)))
+                eq("qwen-thinking"), eq("退货规则"), eq("退货规则"), any(List.class), any(List.class), any()))
                 .thenReturn(Flux.just(
                         new StreamContent("分析知识库...", null),
                         new StreamContent(null, "根据政策[1]，支持7天退货。")

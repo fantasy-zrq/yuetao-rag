@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { BookOpen, ChevronLeft, LogOut, MessageSquareText, Search, UserRound, Workflow } from "lucide-react";
+import { BookOpen, ChevronLeft, ClipboardList, GitBranch, LogOut, MessageSquareText, Search, UserRound, Workflow } from "lucide-react";
 
 import { Button } from "@/components/Button";
 import { useAuthStore } from "@/stores/authStore";
@@ -56,6 +56,23 @@ export function AppShell() {
             <span className="admin-sidebar__item-indicator" />
             <Workflow className="admin-sidebar__item-icon" size={18} />
             链路追踪
+          </NavLink>
+          <p className="admin-sidebar__group-title">意图管理</p>
+          <NavLink
+            to="/admin/intent-tree"
+            className={({ isActive }) => `admin-sidebar__item ${isActive ? "admin-sidebar__item--active" : ""}`}
+          >
+            <span className="admin-sidebar__item-indicator" />
+            <GitBranch className="admin-sidebar__item-icon" size={18} />
+            意图树配置
+          </NavLink>
+          <NavLink
+            to="/admin/intent-list"
+            className={({ isActive }) => `admin-sidebar__item ${isActive ? "admin-sidebar__item--active" : ""}`}
+          >
+            <span className="admin-sidebar__item-indicator" />
+            <ClipboardList className="admin-sidebar__item-icon" size={18} />
+            意图列表
           </NavLink>
         </nav>
         <div className="admin-sidebar__footer">

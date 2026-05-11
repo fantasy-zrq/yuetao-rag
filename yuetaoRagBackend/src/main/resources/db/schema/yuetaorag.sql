@@ -549,3 +549,61 @@ CREATE INDEX idx_t_user_department_rank_status ON public.t_user USING btree (dep
 
 
 
+
+
+-- ============================================================
+-- 意图树节点表
+-- ============================================================
+DROP TABLE IF EXISTS "public"."t_intent_node";
+
+CREATE TABLE "public"."t_intent_node" (
+    "id"                    int8        NOT NULL,
+    "intent_code"           varchar(128) NOT NULL,
+    "name"                  varchar(128) NOT NULL,
+    "level"                 int4        NOT NULL DEFAULT 0,
+    "parent_id"             int8        NOT NULL DEFAULT 0,
+    "parent_code"           varchar(128),
+    "description"           text,
+    "examples"              text,
+    "collection_name"       varchar(128),
+    "mcp_tool_id"           varchar(128),
+    "top_k"                 int4,
+    "kind"                  int4        NOT NULL DEFAULT 0,
+    "sort_order"            int4        NOT NULL DEFAULT 0,
+    "enabled"               int4        NOT NULL DEFAULT 1,
+    "prompt_snippet"        text,
+    "prompt_template"       text,
+    "param_prompt_template" text,
+    "created_by"            int8        NOT NULL,
+    "updated_by"            int8        NOT NULL,
+    "create_time"           timestamp   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "update_time"           timestamp   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "delete_flag"           int2        NOT NULL DEFAULT 0,
+    PRIMARY KEY ("id")
+);
+
+COMMENT ON TABLE  "public"."t_intent_node" IS '意图树节点表';
+COMMENT ON COLUMN "public"."t_intent_node"."id"                    IS '主键ID，BIGINT，雪花算法';
+COMMENT ON COLUMN "public"."t_intent_node"."intent_code"           IS '意图标识，业务唯一，如 biz-oa';
+COMMENT ON COLUMN "public"."t_intent_node"."name"                  IS '节点名称';
+COMMENT ON COLUMN "public"."t_intent_node"."level"                 IS '层级：0-DOMAIN，1-CATEGORY，2-TOPIC';
+COMMENT ON COLUMN "public"."t_intent_node"."parent_id"             IS '父节点ID，根节点为0';
+COMMENT ON COLUMN "public"."t_intent_node"."parent_code"           IS '父节点意图标识（冗余），根节点为null';
+COMMENT ON COLUMN "public"."t_intent_node"."description"           IS '节点描述';
+COMMENT ON COLUMN "public"."t_intent_node"."examples"              IS '示例问题，JSON数组字符串';
+COMMENT ON COLUMN "public"."t_intent_node"."collection_name"       IS '向量库Collection名称（kind=KB时）';
+COMMENT ON COLUMN "public"."t_intent_node"."mcp_tool_id"           IS 'MCP工具ID（kind=MCP时）';
+COMMENT ON COLUMN "public"."t_intent_node"."top_k"                 IS '节点级TopK，null时使用全局';
+COMMENT ON COLUMN "public"."t_intent_node"."kind"                  IS '节点类型：0-KB，1-SYSTEM，2-MCP';
+COMMENT ON COLUMN "public"."t_intent_node"."sort_order"            IS '同级排序号';
+COMMENT ON COLUMN "public"."t_intent_node"."enabled"               IS '是否启用：1-启用，0-停用';
+COMMENT ON COLUMN "public"."t_intent_node"."prompt_snippet"        IS '短规则片段';
+COMMENT ON COLUMN "public"."t_intent_node"."prompt_template"       IS 'Prompt模板';
+COMMENT ON COLUMN "public"."t_intent_node"."param_prompt_template" IS '参数提取提示词模板（MCP专属）';
+COMMENT ON COLUMN "public"."t_intent_node"."created_by"            IS '创建人用户ID';
+COMMENT ON COLUMN "public"."t_intent_node"."updated_by"            IS '最后更新人用户ID';
+
+CREATE UNIQUE INDEX uk_t_intent_node_intent_code ON public.t_intent_node USING btree (intent_code) WHERE delete_flag = 0;
+CREATE INDEX idx_t_intent_node_parent_id        ON public.t_intent_node USING btree (parent_id, delete_flag);
+CREATE INDEX idx_t_intent_node_parent_code      ON public.t_intent_node USING btree (parent_code, delete_flag);
+CREATE INDEX idx_t_intent_node_level_enabled    ON public.t_intent_node USING btree (level, enabled, delete_flag);

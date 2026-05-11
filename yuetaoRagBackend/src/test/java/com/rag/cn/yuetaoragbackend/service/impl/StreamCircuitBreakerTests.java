@@ -14,6 +14,8 @@ import static org.mockito.Mockito.when;
 import com.rag.cn.yuetaoragbackend.config.enums.ChatSessionStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
+import com.rag.cn.yuetaoragbackend.service.ChatSessionSummaryService;
+import com.rag.cn.yuetaoragbackend.service.IntentNodeService;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
@@ -68,6 +70,10 @@ class StreamCircuitBreakerTests {
     private final AtomicLong redisSequenceState = new AtomicLong();
     @Mock
     private ExecutorService chatStreamExecutor;
+    @Mock
+    private ChatSessionSummaryService chatSessionSummaryService;
+    @Mock
+    private IntentNodeService intentNodeService;
 
     private MemoryProperties memoryProperties;
     private TraceProperties traceProperties;
@@ -100,7 +106,8 @@ class StreamCircuitBreakerTests {
         chatMessageService = new ChatMessageServiceImpl(
                 chatMessageMapper, chatSessionMapper, userMapper, qaTraceLogMapper,
                 chatModelGateway, ragRetrievalService, memoryProperties,
-                traceProperties, aiProperties, redissonClient, chatStreamExecutor);
+                traceProperties, aiProperties, redissonClient, chatStreamExecutor,
+                chatSessionSummaryService, intentNodeService);
         UserContext.set(LoginUser.builder().userId("20").build());
     }
 

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.rag.cn.yuetaoragbackend.dao.mapper.ChunkVectorMapper">
+
+    <select id="selectByVectorSearch"
+            resultType="com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk">
+        select c.id as chunkId,
+               c.document_id as documentId,
+               c.chunk_no as chunkNo,
+               c.effective_content as effectiveContent,
+               kd.title as documentTitle,
+               1 - (cv.embedding &lt;=&gt; cast(#{vectorLiteral} as vector)) as vectorScore,
+               0 as lexicalScore,
+               0 as finalScore
+        from t_chunk_vector cv
+        join t_chunk c on c.id::text = cv.id
+        join t_knowledge_document kd on kd.id = c.document_id
+        where c.delete_flag = 0
+          and c.enabled = true
+          and c.embedding_status = 'SUCCESS'
+          and kd.delete_flag = 0
+          and kd.status = 'ENABLED'
+          and kd.parse_status = 'SUCCESS'
+          <choose>
+              <when test="admin">
+                  and true
+              </when>
+              <otherwise>
+                  and coalesce(kd.min_rank_level, 0) &lt;= #{rankLevel}
+                  and (kd.visibility_scope &lt;&gt; 'SENSITIVE'
+                       or exists (
+                           select 1
+                           from t_document_department_auth dda
+                           where dda.document_id = kd.id
+                             and dda.department_id = #{departmentId}
+                             and dda.delete_flag = 0
+                       ))
+              </otherwise>
+          </choose>
+          <if test="hasCollection">
+              and cv.metadata-&gt;&gt;'collection_name' = #{collectionName}
+          </if>
+        order by cv.embedding &lt;=&gt; cast(#{vectorLiteral} as vector)
+        limit #{recallLimit}
+    </select>
+
+</mapper>

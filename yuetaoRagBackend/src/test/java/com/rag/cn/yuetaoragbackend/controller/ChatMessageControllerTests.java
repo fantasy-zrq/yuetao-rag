@@ -21,6 +21,7 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.QaTraceLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
+import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import com.rag.cn.yuetaoragbackend.service.impl.ChatModelGateway;
 import com.rag.cn.yuetaoragbackend.service.impl.RagRetrievalService;
 import jakarta.servlet.Filter;
@@ -195,15 +196,15 @@ class ChatMessageControllerTests {
         currentTestUserId = user.getId();
         when(chatModelGateway.classifyQuestionIntent("商品退货规则是什么", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("商品退货规则是什么", List.of())).thenReturn("商品退货规则");
-        List<RagRetrievalService.RetrievedChunk> recalledChunks = List.of(
-                new RagRetrievalService.RetrievedChunk(101L, 201L, "商品退货规则", 3,
+        List<RetrievedChunk> recalledChunks = List.of(
+                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0D, 0D));
-        List<RagRetrievalService.RetrievedChunk> rerankedChunks = List.of(
-                new RagRetrievalService.RetrievedChunk(101L, 201L, "商品退货规则", 3,
+        List<RetrievedChunk> rerankedChunks = List.of(
+                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0.50D, 0.71D));
         when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(recalledChunks);
         when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(rerankedChunks);
-        when(chatModelGateway.generateAnswer(any(String.class), any(String.class), any(List.class), any(List.class)))
+        when(chatModelGateway.generateAnswer(any(String.class), any(String.class), any(List.class), any(List.class), any()))
                 .thenReturn("商品支持7天无理由退货[1]。");
         when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
@@ -418,11 +419,11 @@ class ChatMessageControllerTests {
         ChatSessionDO session = persistSession(user.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
         currentTestUserId = user.getId();
         String question = "商品退货规则是什么";
-        List<RagRetrievalService.RetrievedChunk> recalledChunks = List.of(
-                new RagRetrievalService.RetrievedChunk(101L, 201L, "商品退货规则", 3,
+        List<RetrievedChunk> recalledChunks = List.of(
+                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0D, 0D));
-        List<RagRetrievalService.RetrievedChunk> rerankedChunks = List.of(
-                new RagRetrievalService.RetrievedChunk(101L, 201L, "商品退货规则", 3,
+        List<RetrievedChunk> rerankedChunks = List.of(
+                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0.50D, 0.71D));
         when(chatModelGateway.classifyQuestionIntent(question, List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion(question, List.of())).thenReturn("商品退货规则");
@@ -431,9 +432,9 @@ class ChatMessageControllerTests {
         when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("qwen-plus", "glm-4.7"));
         when(chatModelGateway.tryAcquireStreamingCandidate("qwen-plus")).thenReturn(true);
         when(chatModelGateway.tryAcquireStreamingCandidate("glm-4.7")).thenReturn(true);
-        when(chatModelGateway.streamKnowledgeAnswerByCandidate("qwen-plus", question, "商品退货规则", List.of(), rerankedChunks))
+        when(chatModelGateway.streamKnowledgeAnswerByCandidate("qwen-plus", question, "商品退货规则", List.of(), rerankedChunks, null))
                 .thenReturn(Flux.concat(Flux.just("错误半截"), Flux.error(new RuntimeException("model connection lost"))));
-        when(chatModelGateway.streamKnowledgeAnswerByCandidate("glm-4.7", question, "商品退货规则", List.of(), rerankedChunks))
+        when(chatModelGateway.streamKnowledgeAnswerByCandidate("glm-4.7", question, "商品退货规则", List.of(), rerankedChunks, null))
                 .thenReturn(Flux.just("商品支持7天无理由退货", "，特殊品类除外。"));
         when(chatModelGateway.candidateInfo("glm-4.7")).thenReturn(new ChatModelInfoRecord("siliconflow", "GLM-4.7"));
 

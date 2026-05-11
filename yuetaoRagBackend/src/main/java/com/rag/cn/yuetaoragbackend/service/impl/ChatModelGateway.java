@@ -2,10 +2,12 @@ package com.rag.cn.yuetaoragbackend.service.impl;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import com.rag.cn.yuetaoragbackend.config.RoutingChatModel;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelCandidateRuntimeRecord;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
+import com.rag.cn.yuetaoragbackend.dto.resp.IntentNodeTreeResp;
 import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
 import com.rag.cn.yuetaoragbackend.framework.exception.ServiceException;
 import lombok.RequiredArgsConstructor;
@@ -52,6 +54,7 @@ public class ChatModelGateway {
                 "history", renderHistory(recentMessages),
                 "question", safeText(question)));
         String intentContent = chatCompletion("", List.of(userMessage(classifyPrompt)));
+        log.info("[INTENT] 意图分类LLM原始返回: {}", shorten(intentContent, 200));
         return parseIntent(intentContent, question);
     }
 
@@ -61,12 +64,14 @@ public class ChatModelGateway {
 
     public String generateAnswer(String originalQuestion, String rewrittenQuery,
                                  List<String> recentMessages,
-                                 List<RagRetrievalService.RetrievedChunk> citations) {
+                                 List<RetrievedChunk> citations,
+                                 String intentSnippet) {
         String prompt = renderPrompt("prompt/answer-chat-kb.st", Map.of(
                 "history", renderHistory(recentMessages),
                 "question", safeText(originalQuestion),
                 "rewritten_question", safeText(rewrittenQuery),
-                "retrieved_knowledge", renderCitations(citations)));
+                "retrieved_knowledge", renderCitations(citations),
+                "intent_snippet", renderIntentSnippet(intentSnippet)));
         return chatCompletion("", List.of(userMessage(prompt)));
     }
 
@@ -83,6 +88,24 @@ public class ChatModelGateway {
                 "question", safeText(question),
                 "retrieved_knowledge", "无"));
         return chatCompletion("", List.of(userMessage(prompt)));
+    }
+
+    public double scoreLeafIntent(String question, IntentNodeTreeResp leafNode) {
+        String prompt = renderPrompt("prompt/intent-leaf-scorer.st", Map.of(
+                "question", safeText(question),
+                "node_name", safeText(leafNode.getName()),
+                "node_description", safeText(leafNode.getDescription()),
+                "node_examples", safeText(leafNode.getExamples())));
+        String content = chatCompletion("", List.of(userMessage(prompt)));
+        try {
+            JsonNode root = objectMapper.readTree(extractJson(content));
+            double score = root.path("score").asDouble(0.0);
+            log.info("[INTENT] 叶子节点LLM打分: intentCode={}, rawResponse={}", leafNode.getIntentCode(), shorten(content, 100));
+            return score;
+        } catch (Exception e) {
+            log.warn("意图打分解析失败, intentCode={}", leafNode.getIntentCode(), e);
+            return 0.0;
+        }
     }
 
     public ChatModelInfoRecord currentModelInfo() {
@@ -137,12 +160,14 @@ public class ChatModelGateway {
 
     public Flux<String> streamKnowledgeAnswerByCandidate(String candidateId, String originalQuestion,
                                                          String rewrittenQuery, List<String> recentMessages,
-                                                         List<RagRetrievalService.RetrievedChunk> citations) {
+                                                         List<RetrievedChunk> citations,
+                                                         String intentSnippet) {
         String prompt = renderPrompt("prompt/answer-chat-kb.st", Map.of(
                 "history", renderHistory(recentMessages),
                 "question", safeText(originalQuestion),
                 "rewritten_question", safeText(rewrittenQuery),
-                "retrieved_knowledge", renderCitations(citations)));
+                "retrieved_knowledge", renderCitations(citations),
+                "intent_snippet", renderIntentSnippet(intentSnippet)));
         return streamByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
     }
 
@@ -157,12 +182,14 @@ public class ChatModelGateway {
 
     public Flux<StreamContent> streamThinkingKnowledgeAnswerByCandidate(String candidateId, String originalQuestion,
                                                                         String rewrittenQuery, List<String> recentMessages,
-                                                                        List<RagRetrievalService.RetrievedChunk> citations) {
+                                                                        List<RetrievedChunk> citations,
+                                                                        String intentSnippet) {
         String prompt = renderPrompt("prompt/answer-chat-kb.st", Map.of(
                 "history", renderHistory(recentMessages),
                 "question", safeText(originalQuestion),
                 "rewritten_question", safeText(rewrittenQuery),
-                "retrieved_knowledge", renderCitations(citations)));
+                "retrieved_knowledge", renderCitations(citations),
+                "intent_snippet", renderIntentSnippet(intentSnippet)));
         return streamThinkingByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
     }
 
@@ -185,10 +212,17 @@ public class ChatModelGateway {
         return String.join("\n", recentMessages);
     }
 
-    private String renderCitations(List<RagRetrievalService.RetrievedChunk> citations) {
+    private String renderIntentSnippet(String intentSnippet) {
+        if (!StringUtils.hasText(intentSnippet)) {
+            return "";
+        }
+        return "# 意图专项规则\n" + intentSnippet;
+    }
+
+    private String renderCitations(List<RetrievedChunk> citations) {
         StringBuilder builder = new StringBuilder();
         for (int i = 0; i < citations.size(); i++) {
-            RagRetrievalService.RetrievedChunk each = citations.get(i);
+            RetrievedChunk each = citations.get(i);
             builder.append('[').append(i + 1).append("] ")
                     .append(each.documentTitle())
                     .append("（切片#").append(each.chunkNo()).append("）")
@@ -208,13 +242,16 @@ public class ChatModelGateway {
             JsonNode root = objectMapper.readTree(extractJson(content));
             String rewrite = root.path("rewrite").asText();
             boolean shouldSplit = root.path("should_split").asBoolean(false);
+            JsonNode subQuestions = root.path("sub_questions");
+            int subCount = subQuestions.isArray() ? subQuestions.size() : 0;
+            log.info("[REWRITE] Query改写LLM原始返回: rewrite={}, shouldSplit={}, subQuestionCount={}",
+                    shorten(rewrite, 120), shouldSplit, subCount);
             if (!StringUtils.hasText(rewrite)) {
                 rewrite = question;
             }
             if (!shouldSplit) {
                 return rewrite;
             }
-            JsonNode subQuestions = root.path("sub_questions");
             if (!subQuestions.isArray() || subQuestions.size() == 0) {
                 return rewrite;
             }
@@ -227,7 +264,7 @@ public class ChatModelGateway {
             }
             return collected.isEmpty() ? rewrite : String.join("；", collected);
         } catch (Exception ex) {
-            log.warn("Query 改写解析失败，回退原问题", ex);
+            log.warn("[REWRITE] Query改写解析失败，回退原问题，rawResponse={}", shorten(content, 200), ex);
             return question;
         }
     }
@@ -240,9 +277,11 @@ public class ChatModelGateway {
                 return intent;
             }
         } catch (Exception ex) {
-            log.warn("意图识别解析失败，回退默认策略", ex);
+            log.warn("[INTENT] 意图识别解析失败，回退默认策略", ex);
         }
-        return guessIntent(question);
+        String guessed = guessIntent(question);
+        log.info("[INTENT] 回退至关键词启发式: guessedIntent={}", guessed);
+        return guessed;
     }
 
     private String renderPrompt(String location, Map<String, String> variables) {
@@ -264,6 +303,13 @@ public class ChatModelGateway {
 
     private String safeText(String text) {
         return text == null ? "" : text;
+    }
+
+    private String shorten(String text, int maxLength) {
+        if (!StringUtils.hasText(text) || text.length() <= maxLength) {
+            return text;
+        }
+        return text.substring(0, maxLength);
     }
 
     private String extractJson(String content) {

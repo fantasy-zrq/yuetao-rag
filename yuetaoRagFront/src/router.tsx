@@ -4,6 +4,8 @@ import { AppShell } from "@/layouts/AppShell";
 import { ChatPage } from "@/pages/ChatPage";
 import { DocumentManagementPage } from "@/pages/DocumentManagementPage";
 import { DocumentDetailPage } from "@/pages/DocumentDetailPage";
+import { IntentListPage } from "@/pages/IntentListPage";
+import { IntentTreePage } from "@/pages/IntentTreePage";
 import { KnowledgeDocumentsPage } from "@/pages/KnowledgeDocumentsPage";
 import { KnowledgePage } from "@/pages/KnowledgePage";
 import { RagTraceDetailPage } from "@/pages/RagTraceDetailPage";
@@ -49,7 +51,9 @@ export const router = createBrowserRouter([
       { path: "knowledge/:kbId/docs/:docId", element: <DocumentDetailPage /> },
       { path: "traces", element: <RagTracePage /> },
       { path: "traces/:traceId", element: <RagTraceDetailPage /> },
-      { path: "documents", element: <DocumentManagementPage /> }
+      { path: "documents", element: <DocumentManagementPage /> },
+      { path: "intent-tree", element: <IntentTreePage /> },
+      { path: "intent-list", element: <IntentListPage /> }
     ]
   },
   { path: "/", element: <Navigate to="/chat" replace /> },

@@ -6,13 +6,14 @@ import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.AuthzProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.RagRetrievalProperties;
 import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
+import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkVectorMapper;
+import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -25,7 +26,7 @@ import org.springframework.util.StringUtils;
 @RequiredArgsConstructor
 public class RagRetrievalService {
 
-    private final JdbcTemplate jdbcTemplate;
+    private final ChunkVectorMapper chunkVectorMapper;
     private final EmbeddingModel embeddingModel;
     private final RagRetrievalProperties retrievalProperties;
     private final AiProperties aiProperties;
@@ -33,61 +34,33 @@ public class RagRetrievalService {
     private final OpenAiCompatibleRerankModel rerankModel;
 
     public List<RetrievedChunk> retrieve(UserDO user, String query) {
+        return retrieveInternal(user, query, null);
+    }
+
+    public List<RetrievedChunk> retrieveByCollection(UserDO user, String query, String collectionName) {
+        return retrieveInternal(user, query, collectionName);
+    }
+
+    private List<RetrievedChunk> retrieveInternal(UserDO user, String query, String collectionName) {
         float[] queryVector = embeddingModel.embed(query);
         String vectorLiteral = toVectorLiteral(queryVector);
         int recallLimit = Math.max(1, safeInt(retrievalProperties.getTopK(), 8)
                 * Math.max(1, safeInt(retrievalProperties.getCandidateMultiplier(), 3)));
 
-        String sql = """
-                select c.id as chunk_id,
-                       c.document_id,
-                       c.chunk_no,
-                       c.effective_content,
-                       kd.title as document_title,
-                       1 - (cv.embedding <=> cast(? as vector)) as vector_score
-                from t_chunk_vector cv
-                join t_chunk c on c.id::text = cv.id
-                join t_knowledge_document kd on kd.id = c.document_id
-                where c.delete_flag = 0
-                  and c.enabled = true
-                  and c.embedding_status = 'SUCCESS'
-                  and kd.delete_flag = 0
-                  and kd.status = 'ENABLED'
-                  and kd.parse_status = 'SUCCESS'
-                  and (? = true or coalesce(kd.min_rank_level, 0) <= ?)
-                  and (? = true
-                       or kd.visibility_scope <> 'SENSITIVE'
-                       or exists (
-                           select 1
-                           from t_document_department_auth dda
-                           where dda.document_id = kd.id
-                             and dda.department_id = ?
-                             and dda.delete_flag = 0
-                       ))
-                order by cv.embedding <=> cast(? as vector)
-                limit ?
-                """;
-
+        boolean hasCollection = StringUtils.hasText(collectionName);
         boolean admin = isAdmin(user);
-        List<RetrievedChunk> recalled = jdbcTemplate.query(
-                sql,
-                (rs, rowNum) -> new RetrievedChunk(
-                        rs.getLong("chunk_id"),
-                        rs.getLong("document_id"),
-                        rs.getString("document_title"),
-                        rs.getInt("chunk_no"),
-                        rs.getString("effective_content"),
-                        rs.getDouble("vector_score"),
-                        0D,
-                        0D),
+
+        log.info("[RETRIEVE] 向量检索: queryLen={}, collection={}, recallLimit={}, vectorDim={}",
+                query.length(), hasCollection ? collectionName : "global", recallLimit, queryVector.length);
+
+        return chunkVectorMapper.selectByVectorSearch(
                 vectorLiteral,
                 admin,
                 user.getRankLevel() == null ? 0 : user.getRankLevel(),
-                admin,
                 user.getDepartmentId() == null ? -1L : user.getDepartmentId(),
-                vectorLiteral,
+                hasCollection,
+                hasCollection ? collectionName : "",
                 recallLimit);
-        return recalled;
     }
 
     public List<RetrievedChunk> rerank(String query, List<RetrievedChunk> recalled) {
@@ -98,6 +71,7 @@ public class RagRetrievalService {
                 Math.max(1, safeInt(aiProperties.getRerank().getTopN(), safeInt(retrievalProperties.getTopK(), 8))),
                 recalled.size());
         List<String> documents = recalled.stream().map(RetrievedChunk::effectiveContent).toList();
+        log.info("[RERANK] 重排序开始: queryLen={}, docCount={}, rerankLimit={}", query.length(), documents.size(), rerankLimit);
         try {
             List<RerankResultRecord> rerankResults = rerankModel.rerank(query, documents, rerankLimit);
             if (rerankResults.isEmpty()) {
@@ -112,11 +86,14 @@ public class RagRetrievalService {
                 RetrievedChunk original = recalled.get(index);
                 reranked.add(original.withScores(each.score(), each.score()));
             }
-            return reranked.stream()
+            List<RetrievedChunk> result = reranked.stream()
                     .sorted(Comparator.comparing(RetrievedChunk::finalScore).reversed())
                     .toList();
+            log.info("[RERANK] 重排序完成: resultCount={}, topScores={}", result.size(),
+                    result.stream().limit(3).map(c -> String.format("{idx=%d,score=%.4f}", recalled.indexOf(c), c.finalScore())).toList());
+            return result;
         } catch (RuntimeException ex) {
-            log.warn("重排序模型不可用，降级为直接使用召回结果", ex);
+            log.warn("[RERANK] 重排序模型不可用，降级使用向量分数，返回前{}条", rerankLimit, ex);
             return recalled.stream()
                     .limit(rerankLimit)
                     .map(each -> each.withScores(each.vectorScore(), each.vectorScore()))
@@ -143,22 +120,5 @@ public class RagRetrievalService {
 
     private int safeInt(Integer value, int defaultValue) {
         return value == null || value <= 0 ? defaultValue : value;
-    }
-
-    public record RetrievedChunk(Long chunkId, Long documentId, String documentTitle, Integer chunkNo,
-                                 String effectiveContent, Double vectorScore, Double lexicalScore,
-                                 Double finalScore) {
-
-        public RetrievedChunk withScores(Double nextLexicalScore, Double nextFinalScore) {
-            return new RetrievedChunk(
-                    this.chunkId,
-                    this.documentId,
-                    this.documentTitle,
-                    this.chunkNo,
-                    this.effectiveContent,
-                    this.vectorScore,
-                    nextLexicalScore,
-                    nextFinalScore);
-        }
     }
 }

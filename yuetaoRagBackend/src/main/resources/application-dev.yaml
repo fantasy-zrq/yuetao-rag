@@ -36,7 +36,7 @@ spring:
       host: 172.18.58.216
       port: 16379
       password: zrq123
-      database: 1
+      database: 2
 
 rocketmq:
   name-server: 172.18.58.216:19876

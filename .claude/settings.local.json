@@ -21,7 +21,13 @@
       "Bash(javap -cp /root/.m2/repository/org/springframework/ai/spring-ai-openai/1.1.4/spring-ai-openai-1.1.4.jar -p 'org.springframework.ai.openai.OpenAiChatOptions$Builder')",
       "Bash(ls mvnw *)",
       "Bash(ls pom.xml)",
-      "Bash(echo \"Exit code: $?\")"
+      "Bash(echo \"Exit code: $?\")",
+      "Bash(npx tsc *)",
+      "Bash(npx vite *)",
+      "Bash(chmod +x mvnw)",
+      "Bash(chmod +x /mnt/d/IdeaCode/yuetaoRag/yuetaoRagBackend/mvnw)",
+      "Bash(/mnt/d/IdeaCode/yuetaoRag/yuetaoRagBackend/mvnw test *)",
+      "Bash(/mnt/d/IdeaCode/yuetaoRag/yuetaoRagBackend/mvnw compile *)"
     ]
   }
 }

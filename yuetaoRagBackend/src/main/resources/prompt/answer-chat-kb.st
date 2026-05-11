@@ -15,6 +15,8 @@
 【文档内容】
 {retrieved_knowledge}
 
+{intent_snippet}
+
 # 核心原则
 
 ## 1. 自然表达

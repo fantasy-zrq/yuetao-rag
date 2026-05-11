@@ -26,9 +26,12 @@ import com.rag.cn.yuetaoragbackend.dto.resp.*;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
+import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import com.rag.cn.yuetaoragbackend.service.ChatMessageService;
 import com.rag.cn.yuetaoragbackend.service.ChatSessionSummaryService;
+import com.rag.cn.yuetaoragbackend.service.IntentNodeService;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatSessionSummaryDO;
+import com.rag.cn.yuetaoragbackend.dto.resp.IntentNodeTreeResp;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.BeanUtils;
@@ -80,6 +83,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     private final RedissonClient redissonClient;
     private final ExecutorService chatStreamExecutor;
     private final ChatSessionSummaryService chatSessionSummaryService;
+    private final IntentNodeService intentNodeService;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -94,11 +98,16 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         UserDO userDO = requireUser(userId);
 
         String traceId = StringUtils.hasText(requestParam.getTraceId()) ? requestParam.getTraceId() : UUID.randomUUID().toString();
+        long chatStart = System.nanoTime();
+
+        log.info("[CHAT] 收到对话请求: sessionId={}, traceId={}, messageLen={}",
+                requestParam.getSessionId(), traceId, requestParam.getMessage().length());
 
         List<String> historyTexts = loadConversationContext(requestParam.getSessionId());
 
         long intentStart = System.nanoTime();
         String intentType = chatModelGateway.classifyQuestionIntent(requestParam.getMessage(), historyTexts);
+        log.info("[CHAT] 意图分类: intentType={}, elapsed={}ms", intentType, elapsedMillis(intentStart));
         writeTrace(traceId, requestParam.getSessionId(), userId, "INTENT",
                 "SUCCESS",
                 elapsedMillis(intentStart),
@@ -110,6 +119,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         boolean knowledgeHit = false;
 
         if ("CHITCHAT".equals(intentType)) {
+            log.info("[CHAT] 闲聊模式，直接生成回答");
             long generateStart = System.nanoTime();
             answer = chatModelGateway.generateChitchatAnswer(requestParam.getMessage(), historyTexts);
             writeTrace(traceId, requestParam.getSessionId(), userId, "GENERATE",
@@ -119,26 +129,52 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         } else {
             long rewriteStart = System.nanoTime();
             rewrittenQuery = chatModelGateway.rewriteQuestion(requestParam.getMessage(), historyTexts);
+            log.info("[CHAT] Query改写: original={}, rewritten={}",
+                    shorten(requestParam.getMessage(), 80), shorten(rewrittenQuery, 120));
             writeTrace(traceId, requestParam.getSessionId(), userId, "REWRITE",
                     "SUCCESS",
                     elapsedMillis(rewriteStart),
                     "rewrittenQuery=" + shorten(rewrittenQuery, 240));
 
+            long intentScoreStart = System.nanoTime();
+            IntentNodeTreeResp matchedLeaf = scoreBestLeafIntent(requestParam.getMessage());
+            String intentSnippet = matchedLeaf != null ? matchedLeaf.getPromptSnippet() : null;
+            if (matchedLeaf != null) {
+                log.info("[CHAT] 意图树打分: matched=true, intentCode={}, collection={}",
+                        matchedLeaf.getIntentCode(), matchedLeaf.getCollectionName());
+            } else {
+                log.info("[CHAT] 意图树打分: 无匹配叶子节点");
+            }
+            writeTrace(traceId, requestParam.getSessionId(), userId, "INTENT_SCORE",
+                    "SUCCESS",
+                    elapsedMillis(intentScoreStart),
+                    matchedLeaf != null ? "intentCode=" + matchedLeaf.getIntentCode() + ",collection=" + matchedLeaf.getCollectionName() : "no-match");
+
             long retrieveStart = System.nanoTime();
-            List<RagRetrievalService.RetrievedChunk> recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
+            List<RetrievedChunk> recalledChunks;
+            if (matchedLeaf != null && StringUtils.hasText(matchedLeaf.getCollectionName())) {
+                recalledChunks = ragRetrievalService.retrieveByCollection(userDO, rewrittenQuery, matchedLeaf.getCollectionName());
+            } else {
+                recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
+            }
+            log.info("[CHAT] 向量检索: scope={}, candidateCount={}, elapsed={}ms",
+                    matchedLeaf != null && StringUtils.hasText(matchedLeaf.getCollectionName()) ? matchedLeaf.getCollectionName() : "global",
+                    recalledChunks.size(), elapsedMillis(retrieveStart));
             writeTrace(traceId, requestParam.getSessionId(), userId, "RETRIEVE",
                     "SUCCESS",
                     elapsedMillis(retrieveStart),
-                    "candidateCount=" + recalledChunks.size());
+                    "candidateCount=" + recalledChunks.size() + (matchedLeaf != null ? ",scoped=" + matchedLeaf.getCollectionName() : ",global"));
 
             long rerankStart = System.nanoTime();
-            List<RagRetrievalService.RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
+            List<RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
+            log.info("[CHAT] 重排序: rerankCount={}, elapsed={}ms", rerankedChunks.size(), elapsedMillis(rerankStart));
             writeTrace(traceId, requestParam.getSessionId(), userId, "RERANK",
                     "SUCCESS",
                     elapsedMillis(rerankStart),
                     "rerankCount=" + rerankedChunks.size());
 
             if (rerankedChunks.isEmpty()) {
+                log.info("[CHAT] 重排序结果为空，返回静态拒绝回答");
                 answer = "当前知识库中没有该方面的内容，暂时无法回答这个问题。";
                 writeTrace(traceId, requestParam.getSessionId(), userId, "GENERATE",
                         "CANCELLED",
@@ -150,7 +186,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                         requestParam.getMessage(),
                         rewrittenQuery,
                         historyTexts,
-                        rerankedChunks);
+                        rerankedChunks,
+                        intentSnippet);
                 writeTrace(traceId, requestParam.getSessionId(), userId, "GENERATE",
                         "SUCCESS",
                         elapsedMillis(generateStart),
@@ -190,6 +227,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         chatSessionMapper.updateById(updateSession);
 
         chatSessionSummaryService.maybeSummarize(requestParam.getSessionId(), sequenceReservation.assistantSequenceNo());
+
+        log.info("[CHAT] 对话完成: sessionId={}, knowledgeHit={}, citationCount={}, elapsed={}ms",
+                requestParam.getSessionId(), knowledgeHit, citations.size(), elapsedMillis(chatStart));
 
         return new ChatResp()
                 .setSessionId(requestParam.getSessionId())
@@ -232,8 +272,14 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             Disposable subscription = buildChatStreamEvents(requestParam)
                     .subscribe(
                             each -> {
-                                if (!closed.get()) {
+                                if (closed.get()) {
+                                    return;
+                                }
+                                try {
                                     sendStreamEvent(emitter, each);
+                                } catch (Exception ex) {
+                                    log.warn("SSE onNext 发送异常，终止流", ex);
+                                    closed.set(true);
                                 }
                             },
                             ex -> completeEmitterWithError(emitter, requestParam, ex, closed),
@@ -258,16 +304,24 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             ChatSessionDO sessionDO = requireSession(requestParam.getSessionId(), userId);
             UserDO userDO = requireUser(userId);
             String traceId = StringUtils.hasText(requestParam.getTraceId()) ? requestParam.getTraceId() : UUID.randomUUID().toString();
+            long chatStart = System.nanoTime();
+
+            log.info("[CHAT] 收到流式对话请求: sessionId={}, traceId={}, messageLen={}, deepThinking={}",
+                    requestParam.getSessionId(), traceId, requestParam.getMessage().length(),
+                    Boolean.TRUE.equals(requestParam.getDeepThinking()));
+
             List<String> historyTexts = loadConversationContext(requestParam.getSessionId());
 
             long intentStart = System.nanoTime();
             String intentType = chatModelGateway.classifyQuestionIntent(requestParam.getMessage(), historyTexts);
+            log.info("[CHAT] 意图分类: intentType={}, elapsed={}ms", intentType, elapsedMillis(intentStart));
             writeTrace(traceId, requestParam.getSessionId(), userId, "INTENT",
                     "SUCCESS", elapsedMillis(intentStart), "intent=" + intentType);
 
             boolean deepThinking = Boolean.TRUE.equals(requestParam.getDeepThinking());
 
             if ("CHITCHAT".equals(intentType)) {
+                log.info("[CHAT] 闲聊模式，直接生成流式回答");
                 SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
                 persistUserMessage(requestParam, userId, traceId, sequenceReservation.userSequenceNo());
                 if (deepThinking) {
@@ -294,18 +348,44 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
             long rewriteStart = System.nanoTime();
             String rewrittenQuery = chatModelGateway.rewriteQuestion(requestParam.getMessage(), historyTexts);
+            log.info("[CHAT] Query改写: original={}, rewritten={}",
+                    shorten(requestParam.getMessage(), 80), shorten(rewrittenQuery, 120));
             writeTrace(traceId, requestParam.getSessionId(), userId, "REWRITE",
                     "SUCCESS", elapsedMillis(rewriteStart), "rewrittenQuery=" + shorten(rewrittenQuery, 240));
+
+            long intentScoreStart = System.nanoTime();
+            IntentNodeTreeResp matchedLeaf = scoreBestLeafIntent(requestParam.getMessage());
+            String intentSnippet = matchedLeaf != null ? matchedLeaf.getPromptSnippet() : null;
+            if (matchedLeaf != null) {
+                log.info("[CHAT] 意图树打分: matched=true, intentCode={}, collection={}",
+                        matchedLeaf.getIntentCode(), matchedLeaf.getCollectionName());
+            } else {
+                log.info("[CHAT] 意图树打分: 无匹配叶子节点");
+            }
+            writeTrace(traceId, requestParam.getSessionId(), userId, "INTENT_SCORE",
+                    "SUCCESS", elapsedMillis(intentScoreStart),
+                    matchedLeaf != null ? "intentCode=" + matchedLeaf.getIntentCode() + ",collection=" + matchedLeaf.getCollectionName() : "no-match");
+
             long retrieveStart = System.nanoTime();
-            List<RagRetrievalService.RetrievedChunk> recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
+            List<RetrievedChunk> recalledChunks;
+            if (matchedLeaf != null && StringUtils.hasText(matchedLeaf.getCollectionName())) {
+                recalledChunks = ragRetrievalService.retrieveByCollection(userDO, rewrittenQuery, matchedLeaf.getCollectionName());
+            } else {
+                recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
+            }
+            log.info("[CHAT] 向量检索: scope={}, candidateCount={}, elapsed={}ms",
+                    matchedLeaf != null && StringUtils.hasText(matchedLeaf.getCollectionName()) ? matchedLeaf.getCollectionName() : "global",
+                    recalledChunks.size(), elapsedMillis(retrieveStart));
             writeTrace(traceId, requestParam.getSessionId(), userId, "RETRIEVE",
-                    "SUCCESS", elapsedMillis(retrieveStart), "candidateCount=" + recalledChunks.size());
+                    "SUCCESS", elapsedMillis(retrieveStart), "candidateCount=" + recalledChunks.size() + (matchedLeaf != null ? ",scoped=" + matchedLeaf.getCollectionName() : ",global"));
             long rerankStart = System.nanoTime();
-            List<RagRetrievalService.RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
+            List<RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
+            log.info("[CHAT] 重排序: rerankCount={}, elapsed={}ms", rerankedChunks.size(), elapsedMillis(rerankStart));
             writeTrace(traceId, requestParam.getSessionId(), userId, "RERANK",
                     "SUCCESS", elapsedMillis(rerankStart), "rerankCount=" + rerankedChunks.size());
 
             if (rerankedChunks.isEmpty()) {
+                log.info("[CHAT] 重排序结果为空，返回静态拒绝回答");
                 SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
                 persistUserMessage(requestParam, userId, traceId, sequenceReservation.userSequenceNo());
                 return streamStaticAnswer(
@@ -333,7 +413,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                 requestParam.getMessage(),
                                 rewrittenQuery,
                                 historyTexts,
-                                rerankedChunks));
+                                rerankedChunks,
+                                intentSnippet));
             }
             return streamByCandidates(
                     traceId,
@@ -348,7 +429,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                             requestParam.getMessage(),
                             rewrittenQuery,
                             historyTexts,
-                            rerankedChunks));
+                            rerankedChunks,
+                            intentSnippet));
         } catch (ClientException ex) {
             return Flux.just(ChatStreamEventResp.error(requestParam == null ? null : requestParam.getTraceId(),
                     requestParam == null ? null : requestParam.getSessionId(),
@@ -369,7 +451,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     .name(event.getEvent())
                     .data(event));
         } catch (Exception ex) {
-            throw new IllegalStateException("发送 SSE 事件失败", ex);
+            log.warn("发送 SSE 事件失败: event={}", event.getEvent(), ex);
         }
     }
 
@@ -576,10 +658,10 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .toList();
     }
 
-    private List<ChatCitationResp> toCitationResponses(List<RagRetrievalService.RetrievedChunk> retrievedChunks) {
+    private List<ChatCitationResp> toCitationResponses(List<RetrievedChunk> retrievedChunks) {
         return IntStream.range(0, retrievedChunks.size())
                 .mapToObj(index -> {
-                    RagRetrievalService.RetrievedChunk each = retrievedChunks.get(index);
+                    RetrievedChunk each = retrievedChunks.get(index);
                     return new ChatCitationResp()
                             .setIndex(index + 1)
                             .setDocumentId(each.documentId())
@@ -592,10 +674,10 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .toList();
     }
 
-    private List<ChatStreamCitationResp> toStreamCitationResponses(List<RagRetrievalService.RetrievedChunk> retrievedChunks) {
+    private List<ChatStreamCitationResp> toStreamCitationResponses(List<RetrievedChunk> retrievedChunks) {
         return IntStream.range(0, retrievedChunks.size())
                 .mapToObj(index -> {
-                    RagRetrievalService.RetrievedChunk each = retrievedChunks.get(index);
+                    RetrievedChunk each = retrievedChunks.get(index);
                     return new ChatStreamCitationResp()
                             .setIndex(index + 1)
                             .setDocumentId(each.documentId())
@@ -658,6 +740,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                                         long generationStartNanos,
                                                         CandidateStreamProvider streamProvider) {
         if (index >= candidateIds.size()) {
+            log.warn("[MODEL] 所有流式候选模型均已失败: candidateCount={}, elapsed={}ms", candidateIds.size(), elapsedMillis(generationStartNanos));
             writeTrace(traceId, sessionId, userId, "GENERATE", "FAILED", elapsedMillis(generationStartNanos), "all-candidates-exhausted");
             return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
                     BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的聊天模型候选"));
@@ -665,11 +748,13 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         String candidateId = candidateIds.get(index);
         long attemptStart = System.nanoTime();
         if (!chatModelGateway.tryAcquireStreamingCandidate(candidateId)) {
+            log.warn("[MODEL] 流式候选模型熔断跳过: candidateId={}, 跳至下一个", candidateId);
             writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
                     "SKIPPED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=skipped-circuit-open");
             return streamByCandidate(traceId, sessionId, userId, assistantSequenceNo, question,
                     citations, candidateIds, index + 1, attemptNo, generationStartNanos, streamProvider);
         }
+        log.info("[MODEL] 流式候选模型开始尝试: candidateId={}, attemptNo={}", candidateId, attemptNo);
 
         AtomicBoolean sawDelta = new AtomicBoolean(false);
         AtomicBoolean messageStarted = new AtomicBoolean(false);
@@ -709,6 +794,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .onErrorResume(ex -> {
                     chatModelGateway.markStreamingCandidateFailure(candidateId);
                     String reason = resolveStreamFailureReason(ex, sawDelta.get());
+                    log.warn("[MODEL] 流式候选模型失败，熔断并切换下一个: candidateId={}, reason={}, error={}",
+                            candidateId, reason, ex.getMessage());
                     writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
                             "FAILED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=" + reason);
                     Flux<ChatStreamEventResp> nextFlux = streamByCandidate(traceId, sessionId, userId, assistantSequenceNo,
@@ -743,6 +830,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                                                 long generationStartNanos,
                                                                 CandidateThinkingStreamProvider streamProvider) {
         if (index >= candidateIds.size()) {
+            log.warn("[MODEL] 所有深度思考候选模型均已失败: candidateCount={}, elapsed={}ms", candidateIds.size(), elapsedMillis(generationStartNanos));
             writeTrace(traceId, sessionId, userId, "GENERATE", "FAILED", elapsedMillis(generationStartNanos), "all-thinking-candidates-exhausted");
             return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
                     BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的深度思考模型候选"));
@@ -750,11 +838,13 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         String candidateId = candidateIds.get(index);
         long attemptStart = System.nanoTime();
         if (!chatModelGateway.tryAcquireStreamingCandidate(candidateId)) {
+            log.warn("[MODEL] 深度思考候选模型熔断跳过: candidateId={}, 跳至下一个", candidateId);
             writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
                     "SKIPPED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=skipped-circuit-open");
             return streamThinkingByCandidate(traceId, sessionId, userId, assistantSequenceNo, question,
                     citations, candidateIds, index + 1, attemptNo, generationStartNanos, streamProvider);
         }
+        log.info("[MODEL] 深度思考候选模型开始尝试: candidateId={}, attemptNo={}", candidateId, attemptNo);
 
         AtomicBoolean sawDelta = new AtomicBoolean(false);
         AtomicBoolean messageStarted = new AtomicBoolean(false);
@@ -810,6 +900,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .onErrorResume(ex -> {
                     chatModelGateway.markStreamingCandidateFailure(candidateId);
                     String reason = resolveStreamFailureReason(ex, sawDelta.get());
+                    log.warn("[MODEL] 深度思考候选模型失败，熔断并切换下一个: candidateId={}, reason={}, error={}",
+                            candidateId, reason, ex.getMessage());
                     writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
                             "FAILED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=" + reason);
                     Flux<ChatStreamEventResp> nextFlux = streamThinkingByCandidate(traceId, sessionId, userId, assistantSequenceNo,
@@ -952,6 +1044,52 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             return text;
         }
         return text.substring(0, maxLength);
+    }
+
+    private IntentNodeTreeResp scoreBestLeafIntent(String question) {
+        List<IntentNodeTreeResp> tree = intentNodeService.getTree();
+        List<IntentNodeTreeResp> leaves = collectLeafNodes(tree);
+        log.info("[INTENT] 加载意图树: leafCount={}", leaves.size());
+        if (leaves.isEmpty()) {
+            return null;
+        }
+        IntentNodeTreeResp best = null;
+        double bestScore = 0.0;
+        for (IntentNodeTreeResp leaf : leaves) {
+            try {
+                double score = chatModelGateway.scoreLeafIntent(question, leaf);
+                log.info("[INTENT] 叶子打分: intentCode={}, name={}, score={}", leaf.getIntentCode(), leaf.getName(), score);
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = leaf;
+                }
+            } catch (Exception e) {
+                log.warn("意图打分异常, intentCode={}", leaf.getIntentCode(), e);
+            }
+        }
+        if (best != null && bestScore >= 0.5) {
+            log.info("[INTENT] 最佳匹配: intentCode={}, score={}", best.getIntentCode(), bestScore);
+            return best;
+        }
+        log.info("[INTENT] 无匹配（最高分={} < 0.5）", bestScore);
+        return null;
+    }
+
+    private List<IntentNodeTreeResp> collectLeafNodes(List<IntentNodeTreeResp> nodes) {
+        List<IntentNodeTreeResp> leaves = new java.util.ArrayList<>();
+        if (nodes == null) {
+            return leaves;
+        }
+        for (IntentNodeTreeResp node : nodes) {
+            if (node.getChildren() == null || node.getChildren().isEmpty()) {
+                if (Integer.valueOf(1).equals(node.getEnabled())) {
+                    leaves.add(node);
+                }
+            } else {
+                leaves.addAll(collectLeafNodes(node.getChildren()));
+            }
+        }
+        return leaves;
     }
 
     private record SequenceReservation(int userSequenceNo, int assistantSequenceNo) {
