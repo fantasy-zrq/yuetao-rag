@@ -7,9 +7,9 @@
             resultType="com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk">
         select c.id as chunkId,
                c.document_id as documentId,
+               kd.title as documentTitle,
                c.chunk_no as chunkNo,
                c.effective_content as effectiveContent,
-               kd.title as documentTitle,
                1 - (cv.embedding &lt;=&gt; cast(#{vectorLiteral} as vector)) as vectorScore,
                0 as lexicalScore,
                0 as finalScore
