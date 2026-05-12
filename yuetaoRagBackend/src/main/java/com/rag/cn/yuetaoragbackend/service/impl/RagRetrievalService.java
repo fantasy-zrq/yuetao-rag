@@ -1,21 +1,22 @@
 package com.rag.cn.yuetaoragbackend.service.impl;
 
 import com.rag.cn.yuetaoragbackend.config.OpenAiCompatibleRerankModel;
-import com.rag.cn.yuetaoragbackend.config.record.RerankResultRecord;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.AuthzProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.RagRetrievalProperties;
+import com.rag.cn.yuetaoragbackend.config.record.RerankResultRecord;
 import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkVectorMapper;
 import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 
 /**
  * @author zrq

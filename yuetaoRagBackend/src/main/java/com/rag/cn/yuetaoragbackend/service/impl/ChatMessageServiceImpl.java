@@ -11,14 +11,12 @@ import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
-import com.rag.cn.yuetaoragbackend.dao.entity.ChatMessageDO;
-import com.rag.cn.yuetaoragbackend.dao.entity.ChatSessionDO;
-import com.rag.cn.yuetaoragbackend.dao.entity.QaTraceLogDO;
-import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
+import com.rag.cn.yuetaoragbackend.dao.entity.*;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChatMessageMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChatSessionMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.QaTraceLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
+import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatReq;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
@@ -26,31 +24,25 @@ import com.rag.cn.yuetaoragbackend.dto.resp.*;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
-import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import com.rag.cn.yuetaoragbackend.service.ChatMessageService;
 import com.rag.cn.yuetaoragbackend.service.ChatSessionSummaryService;
 import com.rag.cn.yuetaoragbackend.service.IntentNodeService;
-import com.rag.cn.yuetaoragbackend.dao.entity.ChatSessionSummaryDO;
-import com.rag.cn.yuetaoragbackend.dto.resp.IntentNodeTreeResp;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RAtomicLong;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-import org.redisson.api.RAtomicLong;
-import org.redisson.api.RedissonClient;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
-import java.util.Collections;
-import java.util.Date;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -615,7 +607,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         if (summary == null) {
             return recentTexts;
         }
-        List<String> combined = new java.util.ArrayList<>();
+        List<String> combined = new ArrayList<>();
         combined.add("[历史摘要]：" + summary.getSummaryText());
         combined.add("--- 以下为最近对话 ---");
         combined.addAll(recentTexts);
@@ -1076,7 +1068,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     }
 
     private List<IntentNodeTreeResp> collectLeafNodes(List<IntentNodeTreeResp> nodes) {
-        List<IntentNodeTreeResp> leaves = new java.util.ArrayList<>();
+        List<IntentNodeTreeResp> leaves = new ArrayList<>();
         if (nodes == null) {
             return leaves;
         }

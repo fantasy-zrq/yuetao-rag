@@ -51,8 +51,10 @@ public class ChatModelGateway {
 
     public String classifyQuestionIntent(String question, List<String> recentMessages) {
         String classifyPrompt = renderPrompt("prompt/intent-classifier.st", Map.of(
-                "history", renderHistory(recentMessages),
-                "question", safeText(question)));
+                        "history", renderHistory(recentMessages),
+                        "question", safeText(question)
+                )
+        );
         String intentContent = chatCompletion("", List.of(userMessage(classifyPrompt)));
         log.info("[INTENT] 意图分类LLM原始返回: {}", shorten(intentContent, 200));
         return parseIntent(intentContent, question);
@@ -172,7 +174,7 @@ public class ChatModelGateway {
     }
 
     public Flux<StreamContent> streamThinkingChitchatByCandidate(String candidateId, String question,
-                                                                  List<String> recentMessages) {
+                                                                 List<String> recentMessages) {
         String prompt = renderPrompt("prompt/answer-chat-system.st", Map.of(
                 "history", renderHistory(recentMessages),
                 "question", safeText(question),
@@ -198,7 +200,7 @@ public class ChatModelGateway {
         Prompt prompt = StringUtils.hasText(systemPrompt)
                 ? new Prompt(new SystemMessage(systemPrompt), new UserMessage(userContent))
                 : new Prompt(new UserMessage(userContent));
-        var response = chatModel.call(prompt);
+        ChatResponse response = chatModel.call(prompt);
         if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
             throw new ServiceException("聊天模型返回为空");
         }
