@@ -12,8 +12,12 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
+import com.rag.cn.yuetaoragbackend.config.record.StreamContentRecord;
 import com.rag.cn.yuetaoragbackend.config.enums.ChatSessionStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.IntentNodeKindEnum;
@@ -36,12 +40,16 @@ import com.rag.cn.yuetaoragbackend.service.IntentNodeService;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatReq;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
+import com.rag.cn.yuetaoragbackend.dto.req.StopChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatStreamEventResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.IntentNodeTreeResp;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import java.util.List;
 import java.time.Duration;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.mockito.ArgumentCaptor;
@@ -56,8 +64,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RedissonClient;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.FluxSink;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
+import org.slf4j.LoggerFactory;
 
 /**
  * @author zrq
@@ -594,9 +604,9 @@ class ChatMessageServiceImplTests {
         when(chatModelGateway.tryAcquireStreamingCandidate("qwen-thinking")).thenReturn(true);
         when(chatModelGateway.streamThinkingChitchatByCandidate("qwen-thinking", "你好", List.of()))
                 .thenReturn(Flux.just(
-                        new StreamContent("让我想想...", null),
-                        new StreamContent(null, "你好！"),
-                        new StreamContent(null, "有什么可以帮你？")
+                        new StreamContentRecord("让我想想...", null),
+                        new StreamContentRecord(null, "你好！"),
+                        new StreamContentRecord(null, "有什么可以帮你？")
                 ));
         when(chatModelGateway.candidateInfo("qwen-thinking")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
@@ -618,6 +628,87 @@ class ChatMessageServiceImplTests {
     }
 
     @Test
+    void shouldStopActiveStreamByTraceIdAndDisposeSubscription() throws InterruptedException {
+        AtomicBoolean cancelled = new AtomicBoolean(false);
+        CountDownLatch started = new CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            Runnable task = invocation.getArgument(0);
+            task.run();
+            return null;
+        }).when(chatStreamExecutor).execute(any(Runnable.class));
+        when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+        when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
+        when(chatModelGateway.streamChitchatByCandidate("candidate-a", "你好", List.of()))
+                .thenReturn(Flux.create((FluxSink<String> sink) -> {
+                    started.countDown();
+                    sink.onCancel(() -> cancelled.set(true));
+                }));
+
+        chatMessageService.chatStream(new ChatStreamReq()
+                .setSessionId(10L)
+                .setMessage("你好")
+                .setTraceId("trace-stop"));
+
+        assertThat(started.await(1, TimeUnit.SECONDS)).isTrue();
+
+        boolean stopped = chatMessageService.stopChatStream(new StopChatStreamReq()
+                .setSessionId(10L)
+                .setTraceId("trace-stop"));
+
+        assertThat(stopped).isTrue();
+        assertThat(cancelled.get()).isTrue();
+    }
+
+    @Test
+    void shouldLogWhenUserStopsActiveStream() throws InterruptedException {
+        Logger logger = (Logger) LoggerFactory.getLogger(ChatMessageServiceImpl.class);
+        ListAppender<ILoggingEvent> logAppender = new ListAppender<>();
+        logAppender.start();
+        logger.addAppender(logAppender);
+        try {
+            AtomicBoolean cancelled = new AtomicBoolean(false);
+            CountDownLatch started = new CountDownLatch(1);
+            org.mockito.Mockito.doAnswer(invocation -> {
+                Runnable task = invocation.getArgument(0);
+                task.run();
+                return null;
+            }).when(chatStreamExecutor).execute(any(Runnable.class));
+            when(chatModelGateway.classifyQuestionIntent("你好", List.of())).thenReturn("CHITCHAT");
+            when(chatModelGateway.streamingCandidateIds()).thenReturn(List.of("candidate-a"));
+            when(chatModelGateway.tryAcquireStreamingCandidate("candidate-a")).thenReturn(true);
+            when(chatModelGateway.streamChitchatByCandidate("candidate-a", "你好", List.of()))
+                    .thenReturn(Flux.create((FluxSink<String> sink) -> {
+                        started.countDown();
+                        sink.onCancel(() -> cancelled.set(true));
+                    }));
+
+            chatMessageService.chatStream(new ChatStreamReq()
+                    .setSessionId(10L)
+                    .setMessage("你好")
+                    .setTraceId("trace-stop-log"));
+
+            assertThat(started.await(1, TimeUnit.SECONDS)).isTrue();
+
+            boolean stopped = chatMessageService.stopChatStream(new StopChatStreamReq()
+                    .setSessionId(10L)
+                    .setTraceId("trace-stop-log"));
+
+            assertThat(stopped).isTrue();
+            assertThat(cancelled.get()).isTrue();
+            assertThat(logAppender.list)
+                    .extracting(ILoggingEvent::getFormattedMessage)
+                    .anyMatch(message -> message.contains("用户主动停止流式对话")
+                            && message.contains("traceId=trace-stop-log")
+                            && message.contains("sessionId=10")
+                            && message.contains("userId=20"));
+        } finally {
+            logger.detachAppender(logAppender);
+            logAppender.stop();
+        }
+    }
+
+    @Test
     void shouldStreamThinkingWithKnowledgeCitations() {
         when(chatModelGateway.classifyQuestionIntent("退货规则", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("退货规则", List.of())).thenReturn("退货规则");
@@ -632,8 +723,8 @@ class ChatMessageServiceImplTests {
         when(chatModelGateway.streamThinkingKnowledgeAnswerByCandidate(
                 eq("qwen-thinking"), eq("退货规则"), eq("退货规则"), any(List.class), any(List.class), any()))
                 .thenReturn(Flux.just(
-                        new StreamContent("分析知识库...", null),
-                        new StreamContent(null, "根据政策[1]，支持7天退货。")
+                        new StreamContentRecord("分析知识库...", null),
+                        new StreamContentRecord(null, "根据政策[1]，支持7天退货。")
                 ));
         when(chatModelGateway.candidateInfo("qwen-thinking")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
@@ -658,8 +749,8 @@ class ChatMessageServiceImplTests {
         when(chatModelGateway.tryAcquireStreamingCandidate("qwen-thinking")).thenReturn(true);
         when(chatModelGateway.streamThinkingChitchatByCandidate("qwen-thinking", "你好", List.of()))
                 .thenReturn(Flux.just(
-                        new StreamContent("思考中...", null),
-                        new StreamContent(null, "你好！")
+                        new StreamContentRecord("思考中...", null),
+                        new StreamContentRecord(null, "你好！")
                 ));
         when(chatModelGateway.candidateInfo("qwen-thinking")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
@@ -696,8 +787,8 @@ class ChatMessageServiceImplTests {
         when(chatModelGateway.tryAcquireStreamingCandidate("think-a")).thenReturn(true);
         when(chatModelGateway.streamThinkingChitchatByCandidate("think-a", "你好", List.of()))
                 .thenReturn(Flux.just(
-                        new StreamContent("思考中...", null),
-                        new StreamContent(null, "你好！")
+                        new StreamContentRecord("思考中...", null),
+                        new StreamContentRecord(null, "你好！")
                 ));
         when(chatModelGateway.candidateInfo("think-a")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
@@ -750,8 +841,8 @@ class ChatMessageServiceImplTests {
         try {
             when(chatModelGateway.streamThinkingChitchatByCandidate("qwen-thinking", "你好", List.of()))
                     .thenReturn(Flux.just(
-                                    new StreamContent("思考中...", null),
-                                    new StreamContent(null, "你好！"))
+                                    new StreamContentRecord("思考中...", null),
+                                    new StreamContentRecord(null, "你好！"))
                             .publishOn(sourceScheduler));
 
             List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
@@ -810,8 +901,8 @@ class ChatMessageServiceImplTests {
                 .thenReturn(Flux.error(new RuntimeException("model-error")));
         when(chatModelGateway.streamThinkingChitchatByCandidate("candidate-b", "你好", List.of()))
                 .thenReturn(Flux.just(
-                        new StreamContent("思考...", null),
-                        new StreamContent(null, "你好！")
+                        new StreamContentRecord("思考...", null),
+                        new StreamContentRecord(null, "你好！")
                 ));
         when(chatModelGateway.candidateInfo("candidate-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 

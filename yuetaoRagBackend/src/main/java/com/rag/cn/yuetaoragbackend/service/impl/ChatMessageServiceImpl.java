@@ -11,7 +11,12 @@ import com.rag.cn.yuetaoragbackend.config.enums.IntentNodeKindEnum;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
+import com.rag.cn.yuetaoragbackend.config.record.ChatAnswerResultRecord;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
+import com.rag.cn.yuetaoragbackend.config.record.ChatRetrievalPlanRecord;
+import com.rag.cn.yuetaoragbackend.config.record.ChatRouteDecisionRecord;
+import com.rag.cn.yuetaoragbackend.config.record.IntentScoreMatchRecord;
+import com.rag.cn.yuetaoragbackend.config.record.StreamContentRecord;
 import com.rag.cn.yuetaoragbackend.dao.entity.*;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChatMessageMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChatSessionMapper;
@@ -21,6 +26,7 @@ import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatReq;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
+import com.rag.cn.yuetaoragbackend.dto.req.StopChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.*;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
@@ -28,6 +34,9 @@ import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import com.rag.cn.yuetaoragbackend.service.ChatMessageService;
 import com.rag.cn.yuetaoragbackend.service.ChatSessionSummaryService;
 import com.rag.cn.yuetaoragbackend.service.IntentNodeService;
+import com.rag.cn.yuetaoragbackend.service.support.chat.CandidateStreamProvider;
+import com.rag.cn.yuetaoragbackend.service.support.chat.CandidateThinkingStreamProvider;
+import com.rag.cn.yuetaoragbackend.service.support.chat.ChatActiveStream;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RAtomicLong;
@@ -44,13 +53,12 @@ import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
+
+import static com.rag.cn.yuetaoragbackend.config.constant.ChatMessageFlowConstants.*;
 
 /**
  * @author zrq
@@ -61,8 +69,6 @@ import java.util.stream.IntStream;
 @Slf4j
 public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatMessageDO>
         implements ChatMessageService {
-
-    private static final long CHAT_STREAM_TIMEOUT_MILLIS = 180_000L;
 
     private final ChatMessageMapper chatMessageMapper;
     private final ChatSessionMapper chatSessionMapper;
@@ -77,15 +83,15 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     private final ExecutorService chatStreamExecutor;
     private final ChatSessionSummaryService chatSessionSummaryService;
     private final IntentNodeService intentNodeService;
-
-    private static final double INTENT_SCORE_THRESHOLD = 0.5D;
-    private static final int MAX_ROUTE_KB_COUNT = 3;
-    private static final String STATIC_REFUSAL_ANSWER = "当前知识库中没有该方面的内容，暂时无法回答这个问题。";
+    //构建一个缓存，用于存储当前正在处理的对话流，防止关闭错误的会话
+    private final Map<String, ChatActiveStream> activeStreams = new ConcurrentHashMap<>();
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ChatResp chat(ChatReq requestParam) {
-        validateChatRequest(requestParam);
+        if (requestParam == null || requestParam.getSessionId() == null || !StringUtils.hasText(requestParam.getMessage())) {
+            throw new ClientException("会话ID和消息内容不能为空");
+        }
         Long userId = currentUserId();
 
         requireSession(requestParam.getSessionId(), userId);
@@ -99,33 +105,33 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
         List<String> historyTexts = loadConversationContext(requestParam.getSessionId());
 
-        RouteDecision routeDecision = resolveRouteDecision(requestParam.getMessage(), historyTexts,
+        ChatRouteDecisionRecord routeDecision = resolveRouteDecision(requestParam.getMessage(), historyTexts,
                 traceId, requestParam.getSessionId(), userId);
         String rewrittenQuery = routeDecision.requiresRewrite()
                 ? rewriteQuestion(requestParam.getMessage(), historyTexts, traceId, requestParam.getSessionId(), userId)
                 : requestParam.getMessage();
-        SyncChatOutcome outcome = executeSyncRoute(routeDecision, requestParam.getMessage(), rewrittenQuery,
+        ChatAnswerResultRecord answerResult = executeSyncRoute(routeDecision, requestParam.getMessage(), rewrittenQuery,
                 historyTexts, userDO, traceId, requestParam.getSessionId(), userId);
 
-        SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
+        int assistantSequenceNo = reserveAssistantSequenceNo(requestParam.getSessionId());
         ChatModelInfoRecord modelInfo = chatModelGateway.currentModelInfo();
         ChatMessageDO userMessage = new ChatMessageDO()
                 .setSessionId(requestParam.getSessionId())
                 .setUserId(userId)
-                .setRole("USER")
+                .setRole(ROLE_USER)
                 .setContent(requestParam.getMessage())
                 .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
-                .setSequenceNo(sequenceReservation.userSequenceNo())
+                .setSequenceNo(assistantSequenceNo - 1)
                 .setTraceId(traceId);
         chatMessageMapper.insert(userMessage);
 
         ChatMessageDO assistantMessage = new ChatMessageDO()
                 .setSessionId(requestParam.getSessionId())
                 .setUserId(userId)
-                .setRole("ASSISTANT")
-                .setContent(outcome.answer())
+                .setRole(ROLE_ASSISTANT)
+                .setContent(answerResult.answer())
                 .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
-                .setSequenceNo(sequenceReservation.assistantSequenceNo())
+                .setSequenceNo(assistantSequenceNo)
                 .setTraceId(traceId)
                 .setModelProvider(modelInfo.provider())
                 .setModelName(modelInfo.modelName());
@@ -136,10 +142,10 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         updateSession.setLastActiveAt(new Date());
         chatSessionMapper.updateById(updateSession);
 
-        chatSessionSummaryService.maybeSummarize(requestParam.getSessionId(), sequenceReservation.assistantSequenceNo());
+        chatSessionSummaryService.maybeSummarize(requestParam.getSessionId(), assistantSequenceNo);
 
         log.info("[CHAT] 对话完成: sessionId={}, knowledgeHit={}, citationCount={}, elapsed={}ms",
-                requestParam.getSessionId(), outcome.knowledgeHit(), outcome.citations().size(), elapsedMillis(chatStart));
+                requestParam.getSessionId(), answerResult.knowledgeHit(), answerResult.citations().size(), elapsedMillis(chatStart));
 
         return new ChatResp()
                 .setSessionId(requestParam.getSessionId())
@@ -147,37 +153,77 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .setAssistantMessageId(assistantMessage.getId())
                 .setTraceId(traceId)
                 .setIntentType(routeDecision.intentType())
-                .setKnowledgeHit(outcome.knowledgeHit())
+                .setKnowledgeHit(answerResult.knowledgeHit())
                 .setRewrittenQuery(rewrittenQuery)
-                .setAnswer(outcome.answer())
-                .setCitations(outcome.citations());
+                .setAnswer(answerResult.answer())
+                .setCitations(answerResult.citations());
     }
 
     @Override
     public SseEmitter chatStream(ChatStreamReq requestParam) {
-        SseEmitter emitter = new SseEmitter(CHAT_STREAM_TIMEOUT_MILLIS);
+        if (requestParam == null) {
+            throw new ClientException("会话ID和消息内容不能为空");
+        }
+        String traceId = ensureStreamTraceId(requestParam);
+        SseEmitter emitter = new SseEmitter(STREAM_TIMEOUT_MILLIS);
         AtomicReference<Disposable> subscriptionRef = new AtomicReference<>();
         AtomicBoolean closed = new AtomicBoolean(false);
-        Runnable cancelSubscription = () -> {
-            closed.set(true);
-            Disposable subscription = subscriptionRef.get();
-            if (subscription != null && !subscription.isDisposed()) {
-                subscription.dispose();
-            }
-        };
+        ChatActiveStream activeChatStream = new ChatActiveStream(
+                requestParam.getSessionId(),
+                safeCurrentUserId(),
+                emitter,
+                subscriptionRef,
+                closed);
+        activeStreams.put(traceId, activeChatStream);
+        Runnable cancelSubscription = () -> cancelActiveStream(traceId, activeChatStream);
         emitter.onCompletion(cancelSubscription);
         emitter.onTimeout(() -> {
             cancelSubscription.run();
-            completeEmitter(emitter);
+            try {
+                emitter.complete();
+            } catch (Exception ex) {
+                log.debug("SSE emitter 已关闭，忽略 complete 调用", ex);
+            }
         });
         emitter.onError(throwable -> cancelSubscription.run());
-        chatStreamExecutor.execute(() -> sendChatStreamEvents(requestParam, emitter, subscriptionRef, closed));
+        chatStreamExecutor.execute(() -> sendChatStreamEvents(requestParam, emitter, subscriptionRef, closed, traceId, activeChatStream));
         return emitter;
+    }
+
+    @Override
+    public boolean stopChatStream(StopChatStreamReq requestParam) {
+        Long userId = currentUserId();
+        log.info("[CHAT] 用户主动停止流式对话: sessionId={}, traceId={}, userId={}",
+                requestParam.getSessionId(), requestParam.getTraceId(), userId);
+        ChatActiveStream activeChatStream = activeStreams.get(requestParam.getTraceId());
+        if (activeChatStream == null) {
+            log.info("[CHAT] 停止流式对话未命中活动流: sessionId={}, traceId={}, userId={}",
+                    requestParam.getSessionId(), requestParam.getTraceId(), userId);
+            return false;
+        }
+        if (!Objects.equals(activeChatStream.sessionId(), requestParam.getSessionId())
+                || !Objects.equals(activeChatStream.userId(), userId)) {
+            throw new ClientException("无权停止该流式会话");
+        }
+        if (!activeStreams.remove(requestParam.getTraceId(), activeChatStream)) {
+            return false;
+        }
+        activeChatStream.cancel();
+        try {
+            activeChatStream.emitter().complete();
+        } catch (Exception ex) {
+            log.debug("SSE emitter 已关闭，忽略 complete 调用", ex);
+        }
+        log.info("[CHAT] 已停止流式对话: sessionId={}, traceId={}, userId={}",
+                requestParam.getSessionId(), requestParam.getTraceId(), userId);
+        return true;
     }
 
     private void sendChatStreamEvents(ChatStreamReq requestParam, SseEmitter emitter,
                                       AtomicReference<Disposable> subscriptionRef,
-                                      AtomicBoolean closed) {
+                                      AtomicBoolean closed,
+                                      String traceId,
+                                      ChatActiveStream activeChatStream) {
         try {
             Disposable subscription = buildChatStreamEvents(requestParam)
                     .subscribe(
@@ -186,16 +232,50 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                     return;
                                 }
                                 try {
-                                    sendStreamEvent(emitter, each);
+                                    emitter.send(SseEmitter.event()
+                                            .id(each.getTraceId())
+                                            .name(each.getEvent())
+                                            .data(each));
                                 } catch (Exception ex) {
                                     log.warn("SSE onNext 发送异常，终止流", ex);
-                                    closed.set(true);
+                                    cancelActiveStream(traceId, activeChatStream);
+                                    try {
+                                        emitter.complete();
+                                    } catch (Exception completeEx) {
+                                        log.debug("SSE emitter 已关闭，忽略 complete 调用", completeEx);
+                                    }
                                 }
                             },
-                            ex -> completeEmitterWithError(emitter, requestParam, ex, closed),
+                            ex -> {
+                                activeStreams.remove(traceId, activeChatStream);
+                                if (!closed.compareAndSet(false, true)) {
+                                    return;
+                                }
+                                try {
+                                    emitter.send(SseEmitter.event()
+                                            .name("error")
+                                            .data(ChatStreamEventResp.error(
+                                                    requestParam.getTraceId(),
+                                                    requestParam.getSessionId(),
+                                                    BaseErrorCode.SERVICE_ERROR.code(),
+                                                    ex.getMessage())));
+                                } catch (Exception sendErrorEx) {
+                                    log.warn("发送 SSE 错误事件失败", sendErrorEx);
+                                }
+                                try {
+                                    emitter.completeWithError(ex);
+                                } catch (Exception completeEx) {
+                                    log.debug("SSE emitter 已关闭，忽略 completeWithError 调用", completeEx);
+                                }
+                            },
                             () -> {
                                 if (closed.compareAndSet(false, true)) {
-                                    completeEmitter(emitter);
+                                    activeStreams.remove(traceId, activeChatStream);
+                                    try {
+                                        emitter.complete();
+                                    } catch (Exception ex) {
+                                        log.debug("SSE emitter 已关闭，忽略 complete 调用", ex);
+                                    }
                                 }
                             });
             subscriptionRef.set(subscription);
@@ -203,18 +283,38 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 subscription.dispose();
             }
         } catch (Exception ex) {
-            completeEmitterWithError(emitter, requestParam, ex, closed);
+            activeStreams.remove(traceId, activeChatStream);
+            if (!closed.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                emitter.send(SseEmitter.event()
+                        .name("error")
+                        .data(ChatStreamEventResp.error(
+                                requestParam.getTraceId(),
+                                requestParam.getSessionId(),
+                                BaseErrorCode.SERVICE_ERROR.code(),
+                                ex.getMessage())));
+            } catch (Exception sendErrorEx) {
+                log.warn("发送 SSE 错误事件失败", sendErrorEx);
+            }
+            try {
+                emitter.completeWithError(ex);
+            } catch (Exception completeEx) {
+                log.debug("SSE emitter 已关闭，忽略 completeWithError 调用", completeEx);
+            }
         }
     }
 
     Flux<ChatStreamEventResp> buildChatStreamEvents(ChatStreamReq requestParam) {
         try {
-            validateStreamRequest(requestParam);
+            if (requestParam == null || requestParam.getSessionId() == null || !StringUtils.hasText(requestParam.getMessage())) {
+                throw new ClientException("会话ID和消息内容不能为空");
+            }
             Long userId = currentUserId();
             ChatSessionDO sessionDO = requireSession(requestParam.getSessionId(), userId);
             UserDO userDO = requireUser(userId);
             String traceId = StringUtils.hasText(requestParam.getTraceId()) ? requestParam.getTraceId() : UUID.randomUUID().toString();
-            long chatStart = System.nanoTime();
 
             log.info("[CHAT] 收到流式对话请求: sessionId={}, traceId={}, messageLen={}, deepThinking={}",
                     requestParam.getSessionId(), traceId, requestParam.getMessage().length(),
@@ -222,18 +322,26 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
             List<String> historyTexts = loadConversationContext(requestParam.getSessionId());
             boolean deepThinking = Boolean.TRUE.equals(requestParam.getDeepThinking());
-            RouteDecision routeDecision = resolveRouteDecision(requestParam.getMessage(), historyTexts,
+            ChatRouteDecisionRecord routeDecision = resolveRouteDecision(requestParam.getMessage(), historyTexts,
                     traceId, requestParam.getSessionId(), userId);
             String rewrittenQuery = routeDecision.requiresRewrite()
                     ? rewriteQuestion(requestParam.getMessage(), historyTexts, traceId, requestParam.getSessionId(), userId)
                     : requestParam.getMessage();
-            RetrievalPlan retrievalPlan = executeRetrievalPlan(routeDecision, rewrittenQuery, userDO, traceId,
+            ChatRetrievalPlanRecord retrievalPlan = executeRetrievalPlan(routeDecision, rewrittenQuery, userDO, traceId,
                     requestParam.getSessionId(), userId);
 
-            SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
-            persistUserMessage(requestParam, userId, traceId, sequenceReservation.userSequenceNo());
+            int assistantSequenceNo = reserveAssistantSequenceNo(requestParam.getSessionId());
+            // 流式回答真正发出前先落库用户提问，保证中途取消也能保留提问记录。
+            chatMessageMapper.insert(new ChatMessageDO()
+                    .setSessionId(requestParam.getSessionId())
+                    .setUserId(userId)
+                    .setRole(ROLE_USER)
+                    .setContent(requestParam.getMessage())
+                    .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
+                    .setSequenceNo(assistantSequenceNo - 1)
+                    .setTraceId(traceId));
             return buildStreamRouteEvents(routeDecision, retrievalPlan, requestParam, sessionDO, historyTexts,
-                    traceId, userId, deepThinking, sequenceReservation.assistantSequenceNo());
+                    traceId, userId, deepThinking, assistantSequenceNo);
         } catch (ClientException ex) {
             return Flux.just(ChatStreamEventResp.error(requestParam == null ? null : requestParam.getTraceId(),
                     requestParam == null ? null : requestParam.getSessionId(),
@@ -244,59 +352,6 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     requestParam == null ? null : requestParam.getSessionId(),
                     BaseErrorCode.SERVICE_ERROR.code(),
                     ex.getMessage()));
-        }
-    }
-
-    private void validateChatRequest(ChatReq requestParam) {
-        if (requestParam == null || requestParam.getSessionId() == null
-                || !StringUtils.hasText(requestParam.getMessage())) {
-            throw new ClientException("会话ID和消息内容不能为空");
-        }
-    }
-
-    private void sendStreamEvent(SseEmitter emitter, ChatStreamEventResp event) {
-        try {
-            emitter.send(SseEmitter.event()
-                    .id(event.getTraceId())
-                    .name(event.getEvent())
-                    .data(event));
-        } catch (Exception ex) {
-            log.warn("发送 SSE 事件失败: event={}", event.getEvent(), ex);
-        }
-    }
-
-    private void sendUnexpectedStreamError(SseEmitter emitter, ChatStreamReq requestParam, Throwable throwable) {
-        try {
-            emitter.send(SseEmitter.event()
-                    .name("error")
-                    .data(ChatStreamEventResp.error(
-                            requestParam == null ? null : requestParam.getTraceId(),
-                            requestParam == null ? null : requestParam.getSessionId(),
-                            BaseErrorCode.SERVICE_ERROR.code(),
-                            throwable.getMessage())));
-        } catch (Exception ex) {
-            log.warn("发送 SSE 错误事件失败", ex);
-        }
-    }
-
-    private void completeEmitter(SseEmitter emitter) {
-        try {
-            emitter.complete();
-        } catch (Exception ex) {
-            log.debug("SSE emitter 已关闭，忽略 complete 调用", ex);
-        }
-    }
-
-    private void completeEmitterWithError(SseEmitter emitter, ChatStreamReq requestParam, Throwable throwable,
-                                          AtomicBoolean closed) {
-        if (!closed.compareAndSet(false, true)) {
-            return;
-        }
-        sendUnexpectedStreamError(emitter, requestParam, throwable);
-        try {
-            emitter.completeWithError(throwable);
-        } catch (Exception ex) {
-            log.debug("SSE emitter 已关闭，忽略 completeWithError 调用", ex);
         }
     }
 
@@ -380,13 +435,6 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return sessionDO;
     }
 
-    private void validateStreamRequest(ChatStreamReq requestParam) {
-        if (requestParam == null || requestParam.getSessionId() == null
-                || !StringUtils.hasText(requestParam.getMessage())) {
-            throw new ClientException("会话ID和消息内容不能为空");
-        }
-    }
-
     private UserDO requireUser(Long userId) {
         UserDO userDO = userMapper.selectOne(Wrappers.<UserDO>lambdaQuery()
                 .eq(UserDO::getId, userId)
@@ -405,7 +453,37 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         }
     }
 
-    private List<ChatMessageDO> loadRecentMessages(Long sessionId) {
+    private Long safeCurrentUserId() {
+        String userId = UserContext.getUserId();
+        if (!StringUtils.hasText(userId)) {
+            return null;
+        }
+        try {
+            return Long.parseLong(userId);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private String ensureStreamTraceId(ChatStreamReq requestParam) {
+        if (StringUtils.hasText(requestParam.getTraceId())) {
+            return requestParam.getTraceId();
+        }
+        String traceId = UUID.randomUUID().toString();
+        requestParam.setTraceId(traceId);
+        return traceId;
+    }
+
+    /**
+     * 主动停止和客户端断流都要走同一套清理逻辑，保证注册表和 Reactor 订阅一起释放。
+     */
+    private void cancelActiveStream(String traceId, ChatActiveStream activeChatStream) {
+        activeStreams.remove(traceId, activeChatStream);
+        activeChatStream.cancel();
+    }
+
+    private List<String> loadConversationContext(Long sessionId) {
+        ChatSessionSummaryDO summary = chatSessionSummaryService.loadLatestSummary(sessionId);
         int limit = memoryProperties.getRecentWindowSize() == null || memoryProperties.getRecentWindowSize() <= 0
                 ? 12 : memoryProperties.getRecentWindowSize();
         LambdaQueryWrapper<ChatMessageDO> queryWrapper = Wrappers.<ChatMessageDO>lambdaQuery()
@@ -415,13 +493,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         Page<ChatMessageDO> page = new Page<>(1, limit, false);
         List<ChatMessageDO> recentMessages = chatMessageMapper.selectPage(page, queryWrapper).getRecords();
         Collections.reverse(recentMessages);
-        return recentMessages;
-    }
-
-    private List<String> loadConversationContext(Long sessionId) {
-        ChatSessionSummaryDO summary = chatSessionSummaryService.loadLatestSummary(sessionId);
-        List<ChatMessageDO> recentMessages = loadRecentMessages(sessionId);
-        List<String> recentTexts = toHistoryTexts(recentMessages);
+        List<String> recentTexts = recentMessages.stream()
+                .map(each -> each.getRole() + ": " + each.getContent())
+                .toList();
         if (summary == null) {
             return recentTexts;
         }
@@ -437,17 +511,18 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         long rewriteStart = System.nanoTime();
         String rewrittenQuery = chatModelGateway.rewriteQuestion(question, historyTexts);
         log.info("[CHAT] Query改写: original={}, rewritten={}",
-                shorten(question, 80), shorten(rewrittenQuery, 120));
-        writeTrace(traceId, sessionId, userId, "REWRITE",
-                "SUCCESS", elapsedMillis(rewriteStart), "rewrittenQuery=" + shorten(rewrittenQuery, 240));
+                shorten(question, QUESTION_LOG_MAX_LENGTH), shorten(rewrittenQuery, REWRITE_LOG_MAX_LENGTH));
+        writeTrace(traceId, sessionId, userId, TRACE_STAGE_REWRITE,
+                TRACE_STATUS_SUCCESS, elapsedMillis(rewriteStart),
+                "rewrittenQuery=" + shorten(rewrittenQuery, REWRITE_TRACE_MAX_LENGTH));
         return rewrittenQuery;
     }
 
-    private RouteDecision resolveRouteDecision(String question, List<String> historyTexts,
-                                               String traceId, Long sessionId, Long userId) {
-        List<ScoredLeafIntent> scoredLeaves = scoreLeafIntents(question, traceId, sessionId, userId);
+    private ChatRouteDecisionRecord resolveRouteDecision(String question, List<String> historyTexts,
+                                                   String traceId, Long sessionId, Long userId) {
+        List<IntentScoreMatchRecord> scoredLeaves = scoreLeafIntents(question, traceId, sessionId, userId);
         if (!scoredLeaves.isEmpty()) {
-            List<ScoredLeafIntent> kbLeaves = scoredLeaves.stream()
+            List<IntentScoreMatchRecord> kbLeaves = scoredLeaves.stream()
                     .filter(each -> IntentNodeKindEnum.KB.getCode().equals(each.leaf().getKind()))
                     .filter(each -> each.leaf().getKbId() != null)
                     .toList();
@@ -456,18 +531,18 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 String promptSnippet = mergePromptSnippetsForKnowledgeBases(kbLeaves, knowledgeBaseIds);
                 String promptTemplate = resolveKnowledgePromptTemplate(kbLeaves, knowledgeBaseIds);
                 log.info("[CHAT] 路由决策: route=KB, kbIds={}, leafCount={}", knowledgeBaseIds, kbLeaves.size());
-                return RouteDecision.kb("KB_QA", kbLeaves, knowledgeBaseIds, promptSnippet, promptTemplate);
+                return ChatRouteDecisionRecord.kb(INTENT_TYPE_KB_QA, knowledgeBaseIds, promptSnippet, promptTemplate);
             }
-            List<ScoredLeafIntent> systemLeaves = scoredLeaves.stream()
+            List<IntentScoreMatchRecord> systemLeaves = scoredLeaves.stream()
                     .filter(each -> IntentNodeKindEnum.SYSTEM.getCode().equals(each.leaf().getKind()))
                     .toList();
             if (!systemLeaves.isEmpty()) {
-                ScoredLeafIntent topSystemLeaf = systemLeaves.stream()
-                        .max(Comparator.comparingDouble(ScoredLeafIntent::score))
+                IntentScoreMatchRecord topSystemLeaf = systemLeaves.stream()
+                        .max(Comparator.comparingDouble(IntentScoreMatchRecord::score))
                         .orElse(null);
                 if (topSystemLeaf != null) {
                     log.info("[CHAT] 路由决策: route=SYSTEM, intentCode={}", topSystemLeaf.leaf().getIntentCode());
-                    return RouteDecision.system("CHITCHAT", topSystemLeaf.leaf());
+                    return ChatRouteDecisionRecord.system(INTENT_TYPE_CHITCHAT, topSystemLeaf.leaf());
                 }
             }
         }
@@ -475,23 +550,23 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         long intentStart = System.nanoTime();
         String intentType = chatModelGateway.classifyQuestionIntent(question, historyTexts);
         log.info("[CHAT] 意图分类: intentType={}, elapsed={}ms", intentType, elapsedMillis(intentStart));
-        writeTrace(traceId, sessionId, userId, "INTENT",
-                "SUCCESS", elapsedMillis(intentStart), "intent=" + intentType + ",fallback=true");
-        if ("CHITCHAT".equals(intentType)) {
-            return RouteDecision.chitchat(intentType);
+        writeTrace(traceId, sessionId, userId, TRACE_STAGE_INTENT,
+                TRACE_STATUS_SUCCESS, elapsedMillis(intentStart), "intent=" + intentType + ",fallback=true");
+        if (INTENT_TYPE_CHITCHAT.equals(intentType)) {
+            return ChatRouteDecisionRecord.chitchat(intentType);
         }
-        return RouteDecision.globalKb(intentType);
+        return ChatRouteDecisionRecord.globalKb(intentType);
     }
 
-    private SyncChatOutcome executeSyncRoute(RouteDecision routeDecision, String question, String rewrittenQuery,
-                                             List<String> historyTexts, UserDO userDO,
-                                             String traceId, Long sessionId, Long userId) {
+    private ChatAnswerResultRecord executeSyncRoute(ChatRouteDecisionRecord routeDecision, String question, String rewrittenQuery,
+                                                    List<String> historyTexts, UserDO userDO,
+                                                    String traceId, Long sessionId, Long userId) {
         if (routeDecision.isChitchat()) {
             long generateStart = System.nanoTime();
             String answer = chatModelGateway.generateChitchatAnswer(question, historyTexts);
-            writeTrace(traceId, sessionId, userId, "GENERATE",
-                    "SUCCESS", elapsedMillis(generateStart), "intent=CHITCHAT");
-            return new SyncChatOutcome(answer, List.of(), false);
+            writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
+                    TRACE_STATUS_SUCCESS, elapsedMillis(generateStart), "intent=" + INTENT_TYPE_CHITCHAT);
+            return new ChatAnswerResultRecord(answer, List.of(), false);
         }
         if (routeDecision.isSystem()) {
             long generateStart = System.nanoTime();
@@ -499,16 +574,17 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     ? chatModelGateway.generateChitchatAnswer(
                     question, historyTexts, routeDecision.systemLeaf().getPromptTemplate())
                     : chatModelGateway.generateChitchatAnswer(question, historyTexts);
-            writeTrace(traceId, sessionId, userId, "GENERATE",
-                    "SUCCESS", elapsedMillis(generateStart),
+            writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
+                    TRACE_STATUS_SUCCESS, elapsedMillis(generateStart),
                     "intent=SYSTEM,intentCode=" + routeDecision.systemLeaf().getIntentCode());
-            return new SyncChatOutcome(answer, List.of(), false);
+            return new ChatAnswerResultRecord(answer, List.of(), false);
         }
 
-        RetrievalPlan retrievalPlan = executeRetrievalPlan(routeDecision, rewrittenQuery, userDO, traceId, sessionId, userId);
+        ChatRetrievalPlanRecord retrievalPlan = executeRetrievalPlan(routeDecision, rewrittenQuery, userDO, traceId, sessionId, userId);
         if (retrievalPlan.refusal()) {
-            writeTrace(traceId, sessionId, userId, "GENERATE", "CANCELLED", 1L, "rerank-empty");
-            return new SyncChatOutcome(STATIC_REFUSAL_ANSWER, List.of(), false);
+            writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
+                    TRACE_STATUS_CANCELLED, TRACE_CANCELLED_LATENCY_MILLIS, STREAM_FAILURE_RERANK_EMPTY);
+            return new ChatAnswerResultRecord(STATIC_REFUSAL_ANSWER, List.of(), false);
         }
 
         long generateStart = System.nanoTime();
@@ -526,28 +602,45 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 historyTexts,
                 retrievalPlan.rerankedChunks(),
                 retrievalPlan.promptSnippet());
-        writeTrace(traceId, sessionId, userId, "GENERATE",
-                "SUCCESS", elapsedMillis(generateStart),
+        writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
+                TRACE_STATUS_SUCCESS, elapsedMillis(generateStart),
                 "citationCount=" + retrievalPlan.rerankedChunks().size());
-        return new SyncChatOutcome(answer, toCitationResponses(retrievalPlan.rerankedChunks()), true);
+        return new ChatAnswerResultRecord(answer, IntStream.range(0, retrievalPlan.rerankedChunks().size())
+                .mapToObj(index -> {
+                    RetrievedChunk each = retrievalPlan.rerankedChunks().get(index);
+                    return new ChatCitationResp()
+                            .setIndex(index + 1)
+                            .setDocumentId(each.documentId())
+                            .setDocumentTitle(each.documentTitle())
+                            .setChunkId(each.chunkId())
+                            .setChunkNo(each.chunkNo())
+                            .setReferenceLabel(each.documentTitle() + "（切片#" + each.chunkNo() + "）")
+                            .setSnippet(shorten(each.effectiveContent(), CITATION_SNIPPET_MAX_LENGTH));
+                })
+                .toList(), true);
     }
 
-    private RetrievalPlan executeRetrievalPlan(RouteDecision routeDecision, String rewrittenQuery, UserDO userDO,
-                                               String traceId, Long sessionId, Long userId) {
+    /**
+     * KB 定向命中时先做范围检索，只有范围内完全无可用结果时才回退到全局检索。
+     */
+    private ChatRetrievalPlanRecord executeRetrievalPlan(ChatRouteDecisionRecord routeDecision, String rewrittenQuery, UserDO userDO,
+                                                         String traceId, Long sessionId, Long userId) {
         if (!routeDecision.requiresRetrieval()) {
-            return RetrievalPlan.noRetrieval();
+            return ChatRetrievalPlanRecord.noRetrieval();
         }
 
-        List<RetrievedChunk> recalledChunks = retrieveChunks(routeDecision, rewrittenQuery, userDO, traceId, sessionId, userId);
+        List<RetrievedChunk> recalledChunks = routeDecision.isKbScoped()
+                ? retrieveScopedChunks(userDO, rewrittenQuery, routeDecision.knowledgeBaseIds(), traceId, sessionId, userId)
+                : retrieveGlobalChunks(userDO, rewrittenQuery, traceId, sessionId, userId, false);
         List<RetrievedChunk> rerankedChunks = rerankChunks(rewrittenQuery, recalledChunks, traceId, sessionId, userId);
         if (!rerankedChunks.isEmpty()) {
-            return RetrievalPlan.success(rerankedChunks, routeDecision.promptSnippet(),
+            return ChatRetrievalPlanRecord.success(rerankedChunks, routeDecision.promptSnippet(),
                     routeDecision.promptTemplate(), rewrittenQuery);
         }
 
         if (!routeDecision.isKbScoped()) {
             log.info("[CHAT] 重排序结果为空，返回静态拒绝回答");
-            return RetrievalPlan.refusalResult();
+            return ChatRetrievalPlanRecord.refusalResult();
         }
 
         log.info("[CHAT] KB范围检索为空，回退全局检索");
@@ -555,18 +648,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         List<RetrievedChunk> fallbackReranked = rerankChunks(rewrittenQuery, fallbackRecalled, traceId, sessionId, userId);
         if (fallbackReranked.isEmpty()) {
             log.info("[CHAT] 全局回退后仍无结果，返回静态拒绝回答");
-            return RetrievalPlan.refusalResult();
+            return ChatRetrievalPlanRecord.refusalResult();
         }
-        return RetrievalPlan.success(fallbackReranked, null, null, rewrittenQuery);
-    }
-
-    private List<RetrievedChunk> retrieveChunks(RouteDecision routeDecision, String rewrittenQuery, UserDO userDO,
-                                                String traceId, Long sessionId, Long userId) {
-        if (routeDecision.isKbScoped()) {
-            return retrieveScopedChunks(userDO, rewrittenQuery, routeDecision.knowledgeBaseIds(),
-                    traceId, sessionId, userId);
-        }
-        return retrieveGlobalChunks(userDO, rewrittenQuery, traceId, sessionId, userId, false);
+        return ChatRetrievalPlanRecord.success(fallbackReranked, null, null, rewrittenQuery);
     }
 
     private List<RetrievedChunk> retrieveScopedChunks(UserDO userDO, String rewrittenQuery, List<Long> knowledgeBaseIds,
@@ -575,7 +659,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         List<RetrievedChunk> recalledChunks = ragRetrievalService.retrieveByKnowledgeBaseIds(userDO, rewrittenQuery, knowledgeBaseIds);
         log.info("[CHAT] 向量检索: scope=kbIds={}, candidateCount={}, elapsed={}ms",
                 knowledgeBaseIds, recalledChunks.size(), elapsedMillis(retrieveStart));
-        writeTrace(traceId, sessionId, userId, "RETRIEVE", "SUCCESS",
+        writeTrace(traceId, sessionId, userId, TRACE_STAGE_RETRIEVE, TRACE_STATUS_SUCCESS,
                 elapsedMillis(retrieveStart),
                 "candidateCount=" + recalledChunks.size() + ",kbIds=" + knowledgeBaseIds);
         return recalledChunks;
@@ -588,7 +672,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         List<RetrievedChunk> recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
         log.info("[CHAT] 向量检索: scope={}, candidateCount={}, elapsed={}ms",
                 fallback ? "global-fallback" : "global", recalledChunks.size(), elapsedMillis(retrieveStart));
-        writeTrace(traceId, sessionId, userId, "RETRIEVE", "SUCCESS",
+        writeTrace(traceId, sessionId, userId, TRACE_STAGE_RETRIEVE, TRACE_STATUS_SUCCESS,
                 elapsedMillis(retrieveStart),
                 "candidateCount=" + recalledChunks.size() + (fallback ? ",fallback=global" : ",global"));
         return recalledChunks;
@@ -599,12 +683,12 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         long rerankStart = System.nanoTime();
         List<RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
         log.info("[CHAT] 重排序: rerankCount={}, elapsed={}ms", rerankedChunks.size(), elapsedMillis(rerankStart));
-        writeTrace(traceId, sessionId, userId, "RERANK",
-                "SUCCESS", elapsedMillis(rerankStart), "rerankCount=" + rerankedChunks.size());
+        writeTrace(traceId, sessionId, userId, TRACE_STAGE_RERANK,
+                TRACE_STATUS_SUCCESS, elapsedMillis(rerankStart), "rerankCount=" + rerankedChunks.size());
         return rerankedChunks;
     }
 
-    private Flux<ChatStreamEventResp> buildStreamRouteEvents(RouteDecision routeDecision, RetrievalPlan retrievalPlan,
+    private Flux<ChatStreamEventResp> buildStreamRouteEvents(ChatRouteDecisionRecord routeDecision, ChatRetrievalPlanRecord retrievalPlan,
                                                              ChatStreamReq requestParam, ChatSessionDO sessionDO,
                                                              List<String> historyTexts, String traceId, Long userId,
                                                              boolean deepThinking, int assistantSequenceNo) {
@@ -617,11 +701,22 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     requestParam.getMessage(), historyTexts, deepThinking, routeDecision.systemLeaf().getPromptTemplate());
         }
         if (retrievalPlan.refusal()) {
-            return streamStaticAnswer(traceId, sessionDO, userId, assistantSequenceNo,
-                    requestParam.getMessage(), STATIC_REFUSAL_ANSWER);
+            return streamStaticAnswer(traceId, sessionDO, userId, assistantSequenceNo, STATIC_REFUSAL_ANSWER);
         }
 
-        List<ChatStreamCitationResp> citations = toStreamCitationResponses(retrievalPlan.rerankedChunks());
+        List<ChatStreamCitationResp> citations = IntStream.range(0, retrievalPlan.rerankedChunks().size())
+                .mapToObj(index -> {
+                    RetrievedChunk each = retrievalPlan.rerankedChunks().get(index);
+                    return new ChatStreamCitationResp()
+                            .setIndex(index + 1)
+                            .setDocumentId(each.documentId())
+                            .setDocumentTitle(each.documentTitle())
+                            .setChunkId(each.chunkId())
+                            .setChunkNo(each.chunkNo())
+                            .setReferenceLabel(each.documentTitle() + "（切片#" + each.chunkNo() + "）")
+                            .setSnippet(shorten(each.effectiveContent(), CITATION_SNIPPET_MAX_LENGTH));
+                })
+                .toList();
         if (deepThinking) {
             return streamThinkingByCandidates(
                     traceId,
@@ -706,17 +801,14 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                         : chatModelGateway.streamChitchatByCandidate(candidateId, question, historyTexts));
     }
 
-    private SequenceReservation reserveMessageSequences(Long sessionId) {
+    private int reserveAssistantSequenceNo(Long sessionId) {
         long latestSequenceNo = loadLatestSequenceNo(sessionId);
-        RAtomicLong sequenceCounter = redissonClient.getAtomicLong(messageSequenceCounterKey(sessionId));
+        RAtomicLong sequenceCounter = redissonClient.getAtomicLong(MESSAGE_SEQUENCE_KEY_PREFIX + sessionId);
         long currentCounter = sequenceCounter.get();
         if (currentCounter < latestSequenceNo) {
             sequenceCounter.compareAndSet(currentCounter, latestSequenceNo);
         }
-        long assistantSequenceNo = sequenceCounter.addAndGet(2L);
-        return new SequenceReservation(
-                Math.toIntExact(assistantSequenceNo - 1),
-                Math.toIntExact(assistantSequenceNo));
+        return Math.toIntExact(sequenceCounter.addAndGet(MESSAGE_SEQUENCE_INCREMENT));
     }
 
     private long loadLatestSequenceNo(Long sessionId) {
@@ -732,71 +824,18 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return records.get(0).getSequenceNo();
     }
 
-    private String messageSequenceCounterKey(Long sessionId) {
-        return "chat:message:sequence:" + sessionId;
-    }
-
-    private List<String> toHistoryTexts(List<ChatMessageDO> messages) {
-        return messages.stream()
-                .map(each -> each.getRole() + ": " + each.getContent())
-                .toList();
-    }
-
-    private List<ChatCitationResp> toCitationResponses(List<RetrievedChunk> retrievedChunks) {
-        return IntStream.range(0, retrievedChunks.size())
-                .mapToObj(index -> {
-                    RetrievedChunk each = retrievedChunks.get(index);
-                    return new ChatCitationResp()
-                            .setIndex(index + 1)
-                            .setDocumentId(each.documentId())
-                            .setDocumentTitle(each.documentTitle())
-                            .setChunkId(each.chunkId())
-                            .setChunkNo(each.chunkNo())
-                            .setReferenceLabel(each.documentTitle() + "（切片#" + each.chunkNo() + "）")
-                            .setSnippet(shorten(each.effectiveContent(), 120));
-                })
-                .toList();
-    }
-
-    private List<ChatStreamCitationResp> toStreamCitationResponses(List<RetrievedChunk> retrievedChunks) {
-        return IntStream.range(0, retrievedChunks.size())
-                .mapToObj(index -> {
-                    RetrievedChunk each = retrievedChunks.get(index);
-                    return new ChatStreamCitationResp()
-                            .setIndex(index + 1)
-                            .setDocumentId(each.documentId())
-                            .setDocumentTitle(each.documentTitle())
-                            .setChunkId(each.chunkId())
-                            .setChunkNo(each.chunkNo())
-                            .setReferenceLabel(each.documentTitle() + "（切片#" + each.chunkNo() + "）")
-                            .setSnippet(shorten(each.effectiveContent(), 120));
-                })
-                .toList();
-    }
-
-    private void persistUserMessage(ChatStreamReq requestParam, Long userId, String traceId, int sequenceNo) {
-        ChatMessageDO userMessage = new ChatMessageDO()
-                .setSessionId(requestParam.getSessionId())
-                .setUserId(userId)
-                .setRole("USER")
-                .setContent(requestParam.getMessage())
-                .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
-                .setSequenceNo(sequenceNo)
-                .setTraceId(traceId);
-        chatMessageMapper.insert(userMessage);
-    }
-
     private Flux<ChatStreamEventResp> streamStaticAnswer(String traceId, ChatSessionDO sessionDO, Long userId,
-                                                         int assistantSequenceNo, String question, String answer) {
+                                                         int assistantSequenceNo, String answer) {
         long generateStart = System.nanoTime();
         List<String> candidateIds = chatModelGateway.streamingCandidateIds();
-        String candidateId = candidateIds.isEmpty() ? "static" : candidateIds.get(0);
+        String candidateId = candidateIds.isEmpty() ? STATIC_CANDIDATE_ID : candidateIds.get(0);
         ChatModelInfoRecord modelInfo = candidateIds.isEmpty() ? null : chatModelGateway.candidateInfo(candidateId);
         ChatMessageDO assistantMessage = persistAssistantMessage(
-                sessionDO.getId(), userId, assistantSequenceNo, traceId, answer, modelInfo);
+                sessionDO.getId(), userId, assistantSequenceNo, traceId, answer, modelInfo, null, null);
         updateSessionLastActiveAt(sessionDO.getId());
         chatSessionSummaryService.maybeSummarize(sessionDO.getId(), assistantSequenceNo);
-        writeTrace(traceId, sessionDO.getId(), userId, "GENERATE", "SUCCESS", elapsedMillis(generateStart), "intent=STATIC_REFUSAL");
+        writeTrace(traceId, sessionDO.getId(), userId, TRACE_STAGE_GENERATE,
+                TRACE_STATUS_SUCCESS, elapsedMillis(generateStart), "intent=STATIC_REFUSAL");
         return Flux.just(
                 ChatStreamEventResp.messageStart(traceId, sessionDO.getId(), candidateId, 1),
                 ChatStreamEventResp.delta(traceId, sessionDO.getId(), answer),
@@ -825,7 +864,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                                         CandidateStreamProvider streamProvider) {
         if (index >= candidateIds.size()) {
             log.warn("[MODEL] 所有流式候选模型均已失败: candidateCount={}, elapsed={}ms", candidateIds.size(), elapsedMillis(generationStartNanos));
-            writeTrace(traceId, sessionId, userId, "GENERATE", "FAILED", elapsedMillis(generationStartNanos), "all-candidates-exhausted");
+            writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
+                    TRACE_STATUS_FAILED, elapsedMillis(generationStartNanos), "all-candidates-exhausted");
             return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
                     BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的聊天模型候选"));
         }
@@ -833,8 +873,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         long attemptStart = System.nanoTime();
         if (!chatModelGateway.tryAcquireStreamingCandidate(candidateId)) {
             log.warn("[MODEL] 流式候选模型熔断跳过: candidateId={}, 跳至下一个", candidateId);
-            writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                    "SKIPPED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=skipped-circuit-open");
+            writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
+                    TRACE_STATUS_SKIPPED, elapsedMillis(attemptStart),
+                    "candidateId=" + candidateId + ",reason=skipped-circuit-open");
             return streamByCandidate(traceId, sessionId, userId, assistantSequenceNo, question,
                     citations, candidateIds, index + 1, attemptNo, generationStartNanos, streamProvider);
         }
@@ -862,11 +903,12 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                         chatModelGateway.markStreamingCandidateSuccess(candidateId);
                         ChatModelInfoRecord modelInfo = chatModelGateway.candidateInfo(candidateId);
                         ChatMessageDO assistantMessage = persistAssistantMessage(
-                                sessionId, userId, assistantSequenceNo, traceId, answerBuilder.toString(), modelInfo);
+                                sessionId, userId, assistantSequenceNo, traceId, answerBuilder.toString(), modelInfo, null, null);
                         updateSessionLastActiveAt(sessionId);
                         chatSessionSummaryService.maybeSummarize(sessionId, assistantSequenceNo);
-                        writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                                "SUCCESS", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",attemptNo=" + attemptNo);
+                        writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
+                                TRACE_STATUS_SUCCESS, elapsedMillis(attemptStart),
+                                "candidateId=" + candidateId + ",attemptNo=" + attemptNo);
                         return assistantMessage;
                     }).flatMapMany(assistantMessage -> {
                         Flux<ChatStreamEventResp> citationFlux = citations == null || citations.isEmpty()
@@ -880,8 +922,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     String reason = resolveStreamFailureReason(ex, sawDelta.get());
                     log.warn("[MODEL] 流式候选模型失败，熔断并切换下一个: candidateId={}, reason={}, error={}",
                             candidateId, reason, ex.getMessage());
-                    writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                            "FAILED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=" + reason);
+                    writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
+                            TRACE_STATUS_FAILED, elapsedMillis(attemptStart),
+                            "candidateId=" + candidateId + ",reason=" + reason);
                     Flux<ChatStreamEventResp> nextFlux = streamByCandidate(traceId, sessionId, userId, assistantSequenceNo,
                             question, citations, candidateIds, index + 1, attemptNo + 1, generationStartNanos, streamProvider);
                     if (sawDelta.get()) {
@@ -915,7 +958,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                                                 CandidateThinkingStreamProvider streamProvider) {
         if (index >= candidateIds.size()) {
             log.warn("[MODEL] 所有深度思考候选模型均已失败: candidateCount={}, elapsed={}ms", candidateIds.size(), elapsedMillis(generationStartNanos));
-            writeTrace(traceId, sessionId, userId, "GENERATE", "FAILED", elapsedMillis(generationStartNanos), "all-thinking-candidates-exhausted");
+            writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
+                    TRACE_STATUS_FAILED, elapsedMillis(generationStartNanos), "all-thinking-candidates-exhausted");
             return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
                     BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的深度思考模型候选"));
         }
@@ -923,8 +967,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         long attemptStart = System.nanoTime();
         if (!chatModelGateway.tryAcquireStreamingCandidate(candidateId)) {
             log.warn("[MODEL] 深度思考候选模型熔断跳过: candidateId={}, 跳至下一个", candidateId);
-            writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                    "SKIPPED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=skipped-circuit-open");
+            writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
+                    TRACE_STATUS_SKIPPED, elapsedMillis(attemptStart),
+                    "candidateId=" + candidateId + ",reason=skipped-circuit-open");
             return streamThinkingByCandidate(traceId, sessionId, userId, assistantSequenceNo, question,
                     citations, candidateIds, index + 1, attemptNo, generationStartNanos, streamProvider);
         }
@@ -936,7 +981,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         StringBuilder thinkingBuilder = new StringBuilder();
         AtomicReference<Long> thinkingStartNanos = new AtomicReference<>();
 
-        Flux<StreamContent> contentFlux = applyThinkingStreamTimeouts(streamProvider.stream(candidateId, question));
+        Flux<StreamContentRecord> contentFlux = applyStreamTimeouts(streamProvider.stream(candidateId, question));
         Flux<ChatStreamEventResp> attemptFlux = contentFlux.concatMap(sc -> {
                     List<ChatStreamEventResp> events = new java.util.ArrayList<>();
                     if (sc.hasThinking()) {
@@ -971,8 +1016,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                 thinkingBuilder.toString(), thinkingDurationMs);
                         updateSessionLastActiveAt(sessionId);
                         chatSessionSummaryService.maybeSummarize(sessionId, assistantSequenceNo);
-                        writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                                "SUCCESS", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",attemptNo=" + attemptNo + ",thinking=" + (thinkingDurationMs != null));
+                        writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
+                                TRACE_STATUS_SUCCESS, elapsedMillis(attemptStart),
+                                "candidateId=" + candidateId + ",attemptNo=" + attemptNo + ",thinking=" + (thinkingDurationMs != null));
                         return assistantMessage;
                     }).flatMapMany(assistantMessage -> {
                         Flux<ChatStreamEventResp> citationFlux = citations == null || citations.isEmpty()
@@ -986,8 +1032,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     String reason = resolveStreamFailureReason(ex, sawDelta.get());
                     log.warn("[MODEL] 深度思考候选模型失败，熔断并切换下一个: candidateId={}, reason={}, error={}",
                             candidateId, reason, ex.getMessage());
-                    writeTrace(traceId, sessionId, userId, "STREAM_CANDIDATE",
-                            "FAILED", elapsedMillis(attemptStart), "candidateId=" + candidateId + ",reason=" + reason);
+                    writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
+                            TRACE_STATUS_FAILED, elapsedMillis(attemptStart),
+                            "candidateId=" + candidateId + ",reason=" + reason);
                     Flux<ChatStreamEventResp> nextFlux = streamThinkingByCandidate(traceId, sessionId, userId, assistantSequenceNo,
                             question, citations, candidateIds, index + 1, attemptNo + 1, generationStartNanos, streamProvider);
                     if (sawDelta.get()) {
@@ -999,27 +1046,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return attemptFlux;
     }
 
-    private Flux<StreamContent> applyThinkingStreamTimeouts(Flux<StreamContent> source) {
-        Integer firstTokenTimeoutMillis = aiProperties.getCircuitBreaker().getFirstTokenTimeoutMillis();
-        Integer streamChunkIdleTimeoutMillis = aiProperties.getCircuitBreaker().getStreamChunkIdleTimeoutMillis();
-        if ((firstTokenTimeoutMillis == null || firstTokenTimeoutMillis <= 0)
-                && (streamChunkIdleTimeoutMillis == null || streamChunkIdleTimeoutMillis <= 0)) {
-            return source;
-        }
-        Mono<Long> firstTimeout = firstTokenTimeoutMillis != null && firstTokenTimeoutMillis > 0
-                ? Mono.delay(Duration.ofMillis(firstTokenTimeoutMillis))
-                : Mono.never();
-        if (firstTokenTimeoutMillis != null && firstTokenTimeoutMillis > 0
-                && streamChunkIdleTimeoutMillis != null && streamChunkIdleTimeoutMillis > 0) {
-            return source.timeout(firstTimeout, ignored -> Mono.delay(Duration.ofMillis(streamChunkIdleTimeoutMillis)));
-        }
-        if (firstTokenTimeoutMillis != null && firstTokenTimeoutMillis > 0) {
-            return source.timeout(firstTimeout, ignored -> Mono.never());
-        }
-        return source.timeout(Mono.never(), ignored -> Mono.delay(Duration.ofMillis(streamChunkIdleTimeoutMillis)));
-    }
-
-    private Flux<String> applyStreamTimeouts(Flux<String> source) {
+    private <T> Flux<T> applyStreamTimeouts(Flux<T> source) {
         Integer firstTokenTimeoutMillis = aiProperties.getCircuitBreaker().getFirstTokenTimeoutMillis();
         Integer streamChunkIdleTimeoutMillis = aiProperties.getCircuitBreaker().getStreamChunkIdleTimeoutMillis();
         if ((firstTokenTimeoutMillis == null || firstTokenTimeoutMillis <= 0)
@@ -1056,17 +1083,12 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     }
 
     private ChatMessageDO persistAssistantMessage(Long sessionId, Long userId, int sequenceNo, String traceId,
-                                                  String answer, ChatModelInfoRecord modelInfo) {
-        return persistAssistantMessage(sessionId, userId, sequenceNo, traceId, answer, modelInfo, null, null);
-    }
-
-    private ChatMessageDO persistAssistantMessage(Long sessionId, Long userId, int sequenceNo, String traceId,
                                                   String answer, ChatModelInfoRecord modelInfo,
                                                   String thinkingContent, Long thinkingDurationMs) {
         ChatMessageDO assistantMessage = new ChatMessageDO()
                 .setSessionId(sessionId)
                 .setUserId(userId)
-                .setRole("ASSISTANT")
+                .setRole(ROLE_ASSISTANT)
                 .setContent(answer)
                 .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
                 .setSequenceNo(sequenceNo)
@@ -1088,9 +1110,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
     private String resolveStreamFailureReason(Throwable throwable, boolean hasOutput) {
         if (throwable instanceof TimeoutException) {
-            return hasOutput ? "idle-timeout" : "first-token-timeout";
+            return hasOutput ? STREAM_FAILURE_IDLE_TIMEOUT : STREAM_FAILURE_FIRST_TOKEN_TIMEOUT;
         }
-        return "stream-error";
+        return STREAM_FAILURE_STREAM_ERROR;
     }
 
     private void writeTrace(String traceId, Long sessionId, Long userId, String stage,
@@ -1106,7 +1128,9 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     .setStage(stage)
                     .setStatus(status)
                     .setLatencyMs(latencyMs)
-                    .setPayloadRef(Boolean.TRUE.equals(traceProperties.getLogPayload()) ? shorten(payload, 512) : null);
+                    .setPayloadRef(Boolean.TRUE.equals(traceProperties.getLogPayload())
+                            ? shorten(payload, TRACE_PAYLOAD_MAX_LENGTH)
+                            : null);
             qaTraceLogMapper.insert(traceLogDO);
         } catch (Exception ex) {
             log.warn("写入链路追踪日志失败: traceId={}, sessionId={}, stage={}, status={}",
@@ -1130,7 +1154,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return text.substring(0, maxLength);
     }
 
-    private List<ScoredLeafIntent> scoreLeafIntents(String question, String traceId, Long sessionId, Long userId) {
+    private List<IntentScoreMatchRecord> scoreLeafIntents(String question, String traceId, Long sessionId, Long userId) {
         List<IntentNodeTreeResp> tree = intentNodeService.getTree();
         List<IntentNodeTreeResp> leaves = collectLeafNodes(tree);
         log.info("[INTENT] 加载意图树: leafCount={}", leaves.size());
@@ -1138,28 +1162,28 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             return List.of();
         }
         long intentScoreStart = System.nanoTime();
-        List<ScoredLeafIntent> matches = new ArrayList<>();
+        List<IntentScoreMatchRecord> matches = new ArrayList<>();
         for (IntentNodeTreeResp leaf : leaves) {
             try {
                 double score = chatModelGateway.scoreLeafIntent(question, leaf);
                 log.info("[INTENT] 叶子打分: intentCode={}, name={}, score={}", leaf.getIntentCode(), leaf.getName(), score);
-                if (score >= INTENT_SCORE_THRESHOLD) {
-                    matches.add(new ScoredLeafIntent(leaf, score));
+                if (score >= LEAF_INTENT_SCORE_THRESHOLD) {
+                    matches.add(new IntentScoreMatchRecord(leaf, score));
                 }
             } catch (Exception e) {
                 log.warn("意图打分异常, intentCode={}", leaf.getIntentCode(), e);
             }
         }
-        matches.sort(Comparator.comparingDouble(ScoredLeafIntent::score).reversed());
+        matches.sort(Comparator.comparingDouble(IntentScoreMatchRecord::score).reversed());
         if (matches.isEmpty()) {
             log.info("[INTENT] 无匹配叶子节点");
-            writeTrace(traceId, sessionId, userId, "INTENT_SCORE", "SUCCESS",
+            writeTrace(traceId, sessionId, userId, TRACE_STAGE_INTENT_SCORE, TRACE_STATUS_SUCCESS,
                     elapsedMillis(intentScoreStart), "leafCount=" + leaves.size() + ",no-match");
         } else {
             log.info("[INTENT] 命中叶子节点: {}", matches.stream()
                     .map(each -> each.leaf().getIntentCode() + "=" + each.score())
                     .toList());
-            writeTrace(traceId, sessionId, userId, "INTENT_SCORE", "SUCCESS",
+            writeTrace(traceId, sessionId, userId, TRACE_STAGE_INTENT_SCORE, TRACE_STATUS_SUCCESS,
                     elapsedMillis(intentScoreStart),
                     "matchCount=" + matches.size() + ",top=" + matches.get(0).leaf().getIntentCode());
         }
@@ -1172,6 +1196,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             return leaves;
         }
         for (IntentNodeTreeResp node : nodes) {
+            // 这里以树结构是否还有下级节点作为“叶子”判定标准，只有真正的末端节点才参与打分。
             if (node.getChildren() == null || node.getChildren().isEmpty()) {
                 if (Integer.valueOf(1).equals(node.getEnabled())) {
                     leaves.add(node);
@@ -1183,23 +1208,23 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return leaves;
     }
 
-    private List<Long> selectTopKnowledgeBaseIds(List<ScoredLeafIntent> kbLeaves) {
+    private List<Long> selectTopKnowledgeBaseIds(List<IntentScoreMatchRecord> kbLeaves) {
         Map<Long, Double> bestScoreByKbId = new LinkedHashMap<>();
-        for (ScoredLeafIntent each : kbLeaves) {
+        for (IntentScoreMatchRecord each : kbLeaves) {
             bestScoreByKbId.merge(each.leaf().getKbId(), each.score(), Math::max);
         }
         return bestScoreByKbId.entrySet().stream()
                 .sorted(Map.Entry.<Long, Double>comparingByValue().reversed())
-                .limit(MAX_ROUTE_KB_COUNT)
+                .limit(ROUTE_TOP_KB_LIMIT)
                 .map(Map.Entry::getKey)
                 .toList();
     }
 
-    private String mergePromptSnippetsForKnowledgeBases(List<ScoredLeafIntent> kbLeaves, List<Long> knowledgeBaseIds) {
+    private String mergePromptSnippetsForKnowledgeBases(List<IntentScoreMatchRecord> kbLeaves, List<Long> knowledgeBaseIds) {
         LinkedHashSet<String> snippets = new LinkedHashSet<>();
         kbLeaves.stream()
                 .filter(each -> knowledgeBaseIds.contains(each.leaf().getKbId()))
-                .sorted(Comparator.comparingDouble(ScoredLeafIntent::score).reversed())
+                .sorted(Comparator.comparingDouble(IntentScoreMatchRecord::score).reversed())
                 .map(each -> each.leaf().getPromptSnippet())
                 .filter(StringUtils::hasText)
                 .map(String::trim)
@@ -1207,92 +1232,18 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return snippets.isEmpty() ? null : String.join("\n", snippets);
     }
 
-    private String resolveKnowledgePromptTemplate(List<ScoredLeafIntent> kbLeaves, List<Long> knowledgeBaseIds) {
+    private String resolveKnowledgePromptTemplate(List<IntentScoreMatchRecord> kbLeaves, List<Long> knowledgeBaseIds) {
         if (knowledgeBaseIds.size() != 1) {
             return null;
         }
         Long targetKbId = knowledgeBaseIds.get(0);
         return kbLeaves.stream()
                 .filter(each -> targetKbId.equals(each.leaf().getKbId()))
-                .sorted(Comparator.comparingDouble(ScoredLeafIntent::score).reversed())
+                .sorted(Comparator.comparingDouble(IntentScoreMatchRecord::score).reversed())
                 .map(each -> each.leaf().getPromptTemplate())
                 .filter(StringUtils::hasText)
                 .map(String::trim)
                 .findFirst()
                 .orElse(null);
-    }
-
-    private record SequenceReservation(int userSequenceNo, int assistantSequenceNo) {
-    }
-
-    private record ScoredLeafIntent(IntentNodeTreeResp leaf, double score) {
-    }
-
-    private record SyncChatOutcome(String answer, List<ChatCitationResp> citations, boolean knowledgeHit) {
-    }
-
-    private record RetrievalPlan(List<RetrievedChunk> rerankedChunks, String promptSnippet,
-                                 String promptTemplate, boolean refusal, String rewrittenQuery) {
-
-        private static RetrievalPlan noRetrieval() {
-            return new RetrievalPlan(List.of(), null, null, false, null);
-        }
-
-        private static RetrievalPlan success(List<RetrievedChunk> rerankedChunks, String promptSnippet,
-                                             String promptTemplate, String rewrittenQuery) {
-            return new RetrievalPlan(rerankedChunks, promptSnippet, promptTemplate, false, rewrittenQuery);
-        }
-
-        private static RetrievalPlan refusalResult() {
-            return new RetrievalPlan(List.of(), null, null, true, null);
-        }
-
-        public String rewrittenQueryOr(String fallback) {
-            return StringUtils.hasText(rewrittenQuery) ? rewrittenQuery : fallback;
-        }
-    }
-
-    private record RouteDecision(String routeType, String intentType, List<Long> knowledgeBaseIds,
-                                 IntentNodeTreeResp systemLeaf, String promptSnippet,
-                                 String promptTemplate) {
-
-        private static RouteDecision chitchat(String intentType) {
-            return new RouteDecision("CHITCHAT", intentType, List.of(), null, null, null);
-        }
-
-        private static RouteDecision globalKb(String intentType) {
-            return new RouteDecision("GLOBAL_KB", intentType, List.of(), null, null, null);
-        }
-
-        private static RouteDecision kb(String intentType, List<ScoredLeafIntent> ignoredLeaves,
-                                        List<Long> knowledgeBaseIds, String promptSnippet,
-                                        String promptTemplate) {
-            return new RouteDecision("KB", intentType, knowledgeBaseIds, null, promptSnippet, promptTemplate);
-        }
-
-        private static RouteDecision system(String intentType, IntentNodeTreeResp systemLeaf) {
-            return new RouteDecision("SYSTEM", intentType, List.of(), systemLeaf,
-                    systemLeaf.getPromptSnippet(), systemLeaf.getPromptTemplate());
-        }
-
-        private boolean isChitchat() {
-            return "CHITCHAT".equals(routeType);
-        }
-
-        private boolean isSystem() {
-            return "SYSTEM".equals(routeType);
-        }
-
-        private boolean isKbScoped() {
-            return "KB".equals(routeType);
-        }
-
-        private boolean requiresRetrieval() {
-            return isKbScoped() || "GLOBAL_KB".equals(routeType);
-        }
-
-        private boolean requiresRewrite() {
-            return requiresRetrieval() || isSystem();
-        }
     }
 }

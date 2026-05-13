@@ -3,6 +3,7 @@ package com.rag.cn.yuetaoragbackend.controller;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatReq;
 import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
+import com.rag.cn.yuetaoragbackend.dto.req.StopChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatMessageCreateResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatMessageDetailResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatMessageListResp;
@@ -37,6 +38,11 @@ public class ChatMessageController {
     @PostMapping(value = "/chatstream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chatStream(@Valid @RequestBody ChatStreamReq requestParam) {
         return chatMessageService.chatStream(requestParam);
+    }
+
+    @PostMapping("/chatstream/stop")
+    public Result<Boolean> stopChatStream(@Valid @RequestBody StopChatStreamReq requestParam) {
+        return Results.success(chatMessageService.stopChatStream(requestParam));
     }
 
     @PostMapping("/create")

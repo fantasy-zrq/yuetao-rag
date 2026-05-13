@@ -55,16 +55,9 @@ export async function sendChatMessage(payload: { sessionId: string; userId: stri
   return normalizeChatResponse(response);
 }
 
-export async function streamChatMessage(
-  payload: { sessionId: string; userId: string; message: string; traceId?: string; deepThinking?: boolean },
-  handlers: {
-    onEvent: (event: ChatStreamEvent) => void;
-    onError: (error: Error) => void;
-    onDone: () => void;
-  }
-) {
+export async function stopChatStream(payload: { sessionId: string; traceId: string }) {
   const token = storage.getToken();
-  const response = await fetch(`${API_BASE_URL}/chat-messages/chatstream`, {
+  const response = await fetch(`${API_BASE_URL}/chat-messages/chatstream/stop`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -72,15 +65,50 @@ export async function streamChatMessage(
     },
     body: JSON.stringify(payload)
   });
-  if (!response.ok || !response.body) {
-    throw new Error(`流式请求失败：${response.status}`);
+  if (!response.ok) {
+    throw new Error(`停止流式请求失败：${response.status}`);
   }
+  const raw = await response.text();
+  if (!raw) {
+    return false;
+  }
+  const result = parseJsonWithLargeIntegerIds<{ code?: string; message?: string; data?: boolean }>(raw);
+  if (result.code && result.code !== "0") {
+    throw new Error(result.message || "停止生成失败");
+  }
+  return Boolean(result.data);
+}
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-
+export async function streamChatMessage(
+  payload: { sessionId: string; userId: string; message: string; traceId?: string; deepThinking?: boolean },
+  handlers: {
+    onEvent: (event: ChatStreamEvent) => void;
+    onError: (error: Error) => void;
+    onDone: () => void;
+  },
+  options?: {
+    signal?: AbortSignal;
+  }
+) {
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   try {
+    const token = storage.getToken();
+    const response = await fetch(`${API_BASE_URL}/chat-messages/chatstream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: token } : {})
+      },
+      body: JSON.stringify(payload),
+      signal: options?.signal
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`流式请求失败：${response.status}`);
+    }
+
+    reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -100,6 +128,8 @@ export async function streamChatMessage(
     handlers.onDone();
   } catch (error) {
     handlers.onError(error as Error);
+  } finally {
+    reader?.releaseLock();
   }
 }
 

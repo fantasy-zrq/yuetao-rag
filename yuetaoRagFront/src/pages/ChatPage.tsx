@@ -40,7 +40,8 @@ export function ChatPage() {
     selectSession,
     startNewSession,
     deleteSession,
-    send
+    send,
+    stopStreaming
   } = useChatStore();
   const { user, logout } = useAuthStore();
   const [input, setInput] = useState("");
@@ -105,7 +106,7 @@ export function ChatPage() {
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     const next = input.trim();
-    if (!next) return;
+    if (!next || isStreaming) return;
     setInput("");
     await send(next);
   }
@@ -130,6 +131,8 @@ export function ChatPage() {
       navigate("/chat", { replace: true });
     }
   }
+
+  const canStopStreaming = isStreaming && useStreaming;
 
   return (
     <div className="chat-shell">
@@ -311,7 +314,6 @@ export function ChatPage() {
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={handleInputKeyDown}
               placeholder={deepThinkingEnabled ? "输入需要深度分析的问题..." : "输入问题，按发送调用后端 RAG..."}
-              disabled={isStreaming}
             />
             <div className="chat-input-footer">
               <div className="chat-input-controls">
@@ -326,7 +328,12 @@ export function ChatPage() {
                   {deepThinkingEnabled ? <span className="thinking-dot" /> : null}
                 </button>
                 <label className="stream-toggle">
-                  <input type="checkbox" checked={useStreaming} onChange={(event) => setUseStreaming(event.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={useStreaming}
+                    onChange={(event) => setUseStreaming(event.target.checked)}
+                    disabled={isStreaming}
+                  />
                   <span>{useStreaming ? "流式生成" : "普通生成"}</span>
                 </label>
               </div>
@@ -337,9 +344,15 @@ export function ChatPage() {
               )}
             </div>
           </div>
-          <Button className="send-btn" type="submit" disabled={isStreaming || !input.trim()}>
-            {isStreaming ? <CircleStop size={18} /> : <Send size={18} />}
-          </Button>
+          {canStopStreaming ? (
+            <Button className="send-btn" type="button" onClick={() => stopStreaming().catch(() => null)}>
+              <CircleStop size={18} />
+            </Button>
+          ) : (
+            <Button className="send-btn" type="submit" disabled={isStreaming || !input.trim()}>
+              <Send size={18} />
+            </Button>
+          )}
         </form>
       </section>
     </div>

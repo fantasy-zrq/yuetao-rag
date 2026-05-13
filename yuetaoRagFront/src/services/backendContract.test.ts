@@ -35,6 +35,7 @@ describe("backend service coverage", () => {
     expect(chatService.getChatMessage).toBeTypeOf("function");
     expect(chatService.sendChatMessage).toBeTypeOf("function");
     expect(chatService.streamChatMessage).toBeTypeOf("function");
+    expect(chatService.stopChatStream).toBeTypeOf("function");
   });
 
   it("exposes every current rag trace endpoint", () => {

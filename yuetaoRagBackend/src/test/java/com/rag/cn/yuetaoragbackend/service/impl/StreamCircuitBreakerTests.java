@@ -19,6 +19,7 @@ import com.rag.cn.yuetaoragbackend.service.IntentNodeService;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
+import com.rag.cn.yuetaoragbackend.config.record.StreamContentRecord;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatMessageDO;
@@ -256,8 +257,8 @@ class StreamCircuitBreakerTests {
         when(chatModelGateway.tryAcquireStreamingCandidate("think-b")).thenReturn(true);
         when(chatModelGateway.streamThinkingChitchatByCandidate("think-b", "你好", List.of()))
                 .thenReturn(Flux.just(
-                        new StreamContent("深度分析...", null),
-                        new StreamContent(null, "你好！")
+                        new StreamContentRecord("深度分析...", null),
+                        new StreamContentRecord(null, "你好！")
                 ));
         when(chatModelGateway.candidateInfo("think-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
@@ -282,13 +283,13 @@ class StreamCircuitBreakerTests {
         // think-a emits thinking_delta then fails (no content delta)
         when(chatModelGateway.streamThinkingChitchatByCandidate("think-a", "你好", List.of()))
                 .thenReturn(Flux.concat(
-                        Flux.just(new StreamContent("让我思考...", null)),
+                        Flux.just(new StreamContentRecord("让我思考...", null)),
                         Flux.error(new RuntimeException("mid-thinking-error"))
                 ));
         when(chatModelGateway.streamThinkingChitchatByCandidate("think-b", "你好", List.of()))
                 .thenReturn(Flux.just(
-                        new StreamContent("重新思考...", null),
-                        new StreamContent(null, "你好！")
+                        new StreamContentRecord("重新思考...", null),
+                        new StreamContentRecord(null, "你好！")
                 ));
         when(chatModelGateway.candidateInfo("think-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
@@ -314,14 +315,14 @@ class StreamCircuitBreakerTests {
         // think-a emits thinking + partial content then fails
         when(chatModelGateway.streamThinkingChitchatByCandidate("think-a", "你好", List.of()))
                 .thenReturn(Flux.concat(
-                        Flux.just(new StreamContent("分析...", null)),
-                        Flux.just(new StreamContent(null, "你")),
+                        Flux.just(new StreamContentRecord("分析...", null)),
+                        Flux.just(new StreamContentRecord(null, "你")),
                         Flux.error(new RuntimeException("mid-content-error"))
                 ));
         when(chatModelGateway.streamThinkingChitchatByCandidate("think-b", "你好", List.of()))
                 .thenReturn(Flux.just(
-                        new StreamContent("再分析...", null),
-                        new StreamContent(null, "你好！")
+                        new StreamContentRecord("再分析...", null),
+                        new StreamContentRecord(null, "你好！")
                 ));
         when(chatModelGateway.candidateInfo("think-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 
@@ -348,8 +349,8 @@ class StreamCircuitBreakerTests {
                 .thenReturn(Flux.error(new RuntimeException("instant-fail")));
         when(chatModelGateway.streamThinkingChitchatByCandidate("think-b", "你好", List.of()))
                 .thenReturn(Flux.just(
-                        new StreamContent("深度思考结果", null),
-                        new StreamContent(null, "你好！")
+                        new StreamContentRecord("深度思考结果", null),
+                        new StreamContentRecord(null, "你好！")
                 ));
         when(chatModelGateway.candidateInfo("think-b")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
 

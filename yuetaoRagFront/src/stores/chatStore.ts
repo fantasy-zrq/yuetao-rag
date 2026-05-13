@@ -1,12 +1,14 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 
+import { CHAT_STREAM_ABORT_ERROR_NAME, CHAT_STREAM_TRACE_PREFIX } from "@/constants/chatStream";
 import {
   createChatSession,
   deleteChatSession,
   listChatMessages,
   listChatSessions,
   sendChatMessage,
+  stopChatStream as stopChatStreamRequest,
   streamChatMessage
 } from "@/services/chatService";
 import { currentUserId } from "@/stores/authStore";
@@ -21,6 +23,9 @@ interface ChatState {
   useStreaming: boolean;
   deepThinkingEnabled: boolean;
   thinkingStartAt: number | null;
+  currentStreamTraceId: string | null;
+  currentStreamSessionId: string | null;
+  streamAbortController: AbortController | null;
   setUseStreaming: (value: boolean) => void;
   setDeepThinkingEnabled: (value: boolean) => void;
   fetchSessions: () => Promise<void>;
@@ -28,6 +33,7 @@ interface ChatState {
   selectSession: (sessionId: string) => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
   send: (content: string) => Promise<void>;
+  stopStreaming: () => Promise<void>;
 }
 
 function sortSessions(sessions: ChatSession[]) {
@@ -49,6 +55,27 @@ function touchSession(sessions: ChatSession[], sessionId: string, lastActiveAt =
   );
 }
 
+function createStreamTraceId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${CHAT_STREAM_TRACE_PREFIX}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function resolveThinkingDurationMs(thinkingStartAt: number | null, existingDurationMs?: number | null) {
+  if (existingDurationMs != null) {
+    return existingDurationMs;
+  }
+  if (thinkingStartAt == null) {
+    return undefined;
+  }
+  return Math.max(1, Math.round((Date.now() - thinkingStartAt) / 1000)) * 1000;
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === CHAT_STREAM_ABORT_ERROR_NAME;
+}
+
 export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
   messages: [],
@@ -58,6 +85,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   useStreaming: true,
   deepThinkingEnabled: false,
   thinkingStartAt: null,
+  currentStreamTraceId: null,
+  currentStreamSessionId: null,
+  streamAbortController: null,
   setUseStreaming: (value) => set({ useStreaming: value }),
   setDeepThinkingEnabled: (value) => set({ deepThinkingEnabled: value }),
   fetchSessions: async () => {
@@ -109,12 +139,50 @@ export const useChatStore = create<ChatState>((set, get) => ({
       throw error;
     }
   },
+  stopStreaming: async () => {
+    const { currentStreamSessionId, currentStreamTraceId, isStreaming, streamAbortController } = get();
+    if (!isStreaming) {
+      return;
+    }
+
+    // 先在本地终止读取并收敛 UI，再尝试通知后端释放模型流，避免中止动作继续冒泡成前端错误。
+    set((state) => ({
+      isStreaming: false,
+      thinkingStartAt: null,
+      currentStreamTraceId: null,
+      currentStreamSessionId: null,
+      streamAbortController: null,
+      messages: state.messages.map((message) =>
+        message.role === "assistant" && message.status === "streaming" && message.traceId === currentStreamTraceId
+          ? {
+              ...message,
+              status: "done",
+              isThinking: false,
+              thinkingDurationMs: resolveThinkingDurationMs(state.thinkingStartAt, message.thinkingDurationMs)
+            }
+          : message
+      )
+    }));
+
+    streamAbortController?.abort();
+
+    if (!currentStreamSessionId || !currentStreamTraceId) {
+      return;
+    }
+    try {
+      await stopChatStreamRequest({ sessionId: currentStreamSessionId, traceId: currentStreamTraceId });
+    } catch {
+      // stop 是 best-effort，前端已本地中止，不再向用户重复提示后台停止失败。
+    }
+  },
   send: async (content) => {
     const trimmed = content.trim();
     const userId = currentUserId();
     if (!trimmed || !userId || get().isStreaming) return;
 
     const deepThinking = get().deepThinkingEnabled;
+    const useStreaming = get().useStreaming;
+    const traceId = createStreamTraceId();
     let sessionId = get().currentSessionId;
     try {
       if (!sessionId) {
@@ -144,23 +212,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
         role: "assistant",
         content: "",
         status: "streaming",
+        traceId,
         citations: [],
         thinking: deepThinking ? "" : undefined,
         isThinking: deepThinking,
         createTime: new Date().toISOString()
       };
+      const streamAbortController = useStreaming ? new AbortController() : null;
 
       set((state) => ({
         messages: [...state.messages, userMessage, assistantMessage],
         sessions: touchSession(state.sessions, activeSessionId),
         isStreaming: true,
-        thinkingStartAt: null
+        thinkingStartAt: null,
+        currentStreamTraceId: useStreaming ? traceId : null,
+        currentStreamSessionId: useStreaming ? activeSessionId : null,
+        streamAbortController
       }));
 
-      if (!get().useStreaming) {
-        const response = await sendChatMessage({ sessionId: activeSessionId, userId, message: trimmed });
+      if (!useStreaming) {
+        const response = await sendChatMessage({ sessionId: activeSessionId, userId, message: trimmed, traceId });
         set((state) => ({
           isStreaming: false,
+          currentStreamTraceId: null,
+          currentStreamSessionId: null,
+          streamAbortController: null,
           sessions: touchSession(state.sessions, response.sessionId),
           messages: state.messages.map((message) =>
             message.id === assistantId
@@ -179,9 +255,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       await streamChatMessage(
-        { sessionId: activeSessionId, userId, message: trimmed, deepThinking: deepThinking || undefined },
+        {
+          sessionId: activeSessionId,
+          userId,
+          message: trimmed,
+          traceId,
+          deepThinking: deepThinking || undefined
+        },
         {
           onEvent: (event) => {
+            if (get().currentStreamTraceId !== traceId) {
+              return;
+            }
             if (event.event === "thinking_delta" && event.content) {
               set((state) => ({
                 thinkingStartAt: state.thinkingStartAt ?? Date.now(),
@@ -228,6 +313,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
               set((state) => ({
                 isStreaming: false,
                 thinkingStartAt: null,
+                currentStreamTraceId: null,
+                currentStreamSessionId: null,
+                streamAbortController: null,
                 sessions: touchSession(state.sessions, event.sessionId || activeSessionId),
                 messages: state.messages.map((message) =>
                   message.id === assistantId
@@ -249,9 +337,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
             }
           },
           onError: (error) => {
+            if (isAbortError(error)) {
+              return;
+            }
             set((state) => ({
               isStreaming: false,
               thinkingStartAt: null,
+              currentStreamTraceId: null,
+              currentStreamSessionId: null,
+              streamAbortController: null,
               messages: state.messages.map((message) =>
                 message.id === assistantId
                   ? {
@@ -271,15 +365,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
           onDone: () => {
             set((state) => ({
               isStreaming: false,
+              currentStreamTraceId: null,
+              currentStreamSessionId: null,
+              streamAbortController: null,
               messages: state.messages.map((message) =>
                 message.id === assistantId && message.status === "streaming" ? { ...message, status: "done" } : message
               )
             }));
           }
-        }
+        },
+        { signal: streamAbortController?.signal }
       );
     } catch (error) {
-      set({ isStreaming: false });
+      set({
+        isStreaming: false,
+        currentStreamTraceId: null,
+        currentStreamSessionId: null,
+        streamAbortController: null
+      });
       toast.error((error as Error).message || "发送失败");
     }
   }

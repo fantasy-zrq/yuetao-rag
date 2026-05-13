@@ -7,6 +7,7 @@ import com.rag.cn.yuetaoragbackend.config.RoutingChatModel;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelCandidateRuntimeRecord;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
+import com.rag.cn.yuetaoragbackend.config.record.StreamContentRecord;
 import com.rag.cn.yuetaoragbackend.dto.resp.IntentNodeTreeResp;
 import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
 import com.rag.cn.yuetaoragbackend.framework.exception.ServiceException;
@@ -185,19 +186,19 @@ public class ChatModelGateway {
         return streamByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
     }
 
-    public Flux<StreamContent> streamThinkingChitchatByCandidate(String candidateId, String question,
+    public Flux<StreamContentRecord> streamThinkingChitchatByCandidate(String candidateId, String question,
                                                                  List<String> recentMessages) {
         return streamThinkingChitchatByCandidate(candidateId, question, recentMessages, null);
     }
 
-    public Flux<StreamContent> streamThinkingChitchatByCandidate(String candidateId, String question,
+    public Flux<StreamContentRecord> streamThinkingChitchatByCandidate(String candidateId, String question,
                                                                  List<String> recentMessages,
                                                                  String promptTemplate) {
         String prompt = renderSystemPrompt(promptTemplate, question, recentMessages, "无");
         return streamThinkingByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
     }
 
-    public Flux<StreamContent> streamThinkingKnowledgeAnswerByCandidate(String candidateId, String originalQuestion,
+    public Flux<StreamContentRecord> streamThinkingKnowledgeAnswerByCandidate(String candidateId, String originalQuestion,
                                                                         String rewrittenQuery, List<String> recentMessages,
                                                                         List<RetrievedChunk> citations,
                                                                         String intentSnippet) {
@@ -205,7 +206,7 @@ public class ChatModelGateway {
                 recentMessages, citations, intentSnippet, null);
     }
 
-    public Flux<StreamContent> streamThinkingKnowledgeAnswerByCandidate(String candidateId, String originalQuestion,
+    public Flux<StreamContentRecord> streamThinkingKnowledgeAnswerByCandidate(String candidateId, String originalQuestion,
                                                                         String rewrittenQuery, List<String> recentMessages,
                                                                         List<RetrievedChunk> citations,
                                                                         String intentSnippet,
@@ -390,7 +391,7 @@ public class ChatModelGateway {
                 .filter(StringUtils::hasText);
     }
 
-    private Flux<StreamContent> streamThinkingByCandidate(String candidateId, Prompt prompt) {
+    private Flux<StreamContentRecord> streamThinkingByCandidate(String candidateId, Prompt prompt) {
         OpenAiChatOptions.Builder builder = OpenAiChatOptions.builder();
         Map<String, Object> extraBody = aiProperties.getChat().getCandidates().stream()
                 .filter(c -> Objects.equals(c.getId(), candidateId))
@@ -408,9 +409,9 @@ public class ChatModelGateway {
                 .filter(sc -> sc.hasThinking() || sc.hasContent());
     }
 
-    private StreamContent extractStreamContent(ChatResponse response) {
+    private StreamContentRecord extractStreamContent(ChatResponse response) {
         if (response == null || response.getResult() == null || response.getResult().getOutput() == null) {
-            return new StreamContent(null, null);
+            return new StreamContentRecord(null, null);
         }
         String reasoning = null;
         Map<String, Object> metadata = response.getResult().getOutput().getMetadata();
@@ -419,7 +420,7 @@ public class ChatModelGateway {
             reasoning = rs;
         }
         String content = response.getResult().getOutput().getText();
-        return new StreamContent(reasoning, content);
+        return new StreamContentRecord(reasoning, content);
     }
 
     private String extractStreamText(ChatResponse response) {

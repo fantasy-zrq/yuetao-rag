@@ -14,6 +14,7 @@ import com.rag.cn.yuetaoragbackend.dto.req.DeleteChatSessionReq;
 import com.rag.cn.yuetaoragbackend.dto.req.DeleteKnowledgeBaseReq;
 import com.rag.cn.yuetaoragbackend.dto.req.DeleteKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.LoginReq;
+import com.rag.cn.yuetaoragbackend.dto.req.StopChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.req.SplitKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.UpdateKnowledgeBaseReq;
 import com.rag.cn.yuetaoragbackend.dto.req.UpdateKnowledgeDocumentReq;
@@ -58,6 +59,7 @@ class RequestValidationContractTests {
         assertRequestBodyParameterValidated(ChatSessionController.class, "deleteChatSession", DeleteChatSessionReq.class);
         assertRequestBodyParameterValidated(ChatMessageController.class, "chat", ChatReq.class);
         assertRequestBodyParameterValidated(ChatMessageController.class, "chatStream", ChatStreamReq.class);
+        assertRequestBodyParameterValidated(ChatMessageController.class, "stopChatStream", StopChatStreamReq.class);
         assertRequestBodyParameterValidated(ChatMessageController.class, "createChatMessage", CreateChatMessageReq.class);
         assertRequestBodyParameterValidated(KnowledgeBaseController.class, "createKnowledgeBase", CreateKnowledgeBaseReq.class);
         assertRequestBodyParameterValidated(KnowledgeBaseController.class, "updateKnowledgeBase", UpdateKnowledgeBaseReq.class);
@@ -78,6 +80,8 @@ class RequestValidationContractTests {
         assertFieldConstraint(ChatReq.class, "message", NotBlank.class);
         assertFieldConstraint(ChatStreamReq.class, "sessionId", NotNull.class);
         assertFieldConstraint(ChatStreamReq.class, "message", NotBlank.class);
+        assertFieldConstraint(StopChatStreamReq.class, "sessionId", NotNull.class);
+        assertFieldConstraint(StopChatStreamReq.class, "traceId", NotBlank.class);
         assertFieldConstraint(CreateChatMessageReq.class, "sessionId", NotNull.class);
         assertFieldConstraint(CreateChatMessageReq.class, "role", NotBlank.class);
         assertFieldConstraint(CreateChatMessageReq.class, "content", NotBlank.class);
