@@ -186,7 +186,7 @@ class ChatMessageControllerTests {
         assertThat(json.path("data").path("knowledgeHit").asBoolean()).isFalse();
         assertThat(json.path("data").path("answer").asText()).contains("你好");
         assertThat(countMessages(session.getId())).isEqualTo(2);
-        assertThat(countTraceLogs(session.getId())).isEqualTo(2);
+        assertThat(countTraceLogs(session.getId())).isEqualTo(3);
     }
 
     @Test
@@ -197,10 +197,10 @@ class ChatMessageControllerTests {
         when(chatModelGateway.classifyQuestionIntent("商品退货规则是什么", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("商品退货规则是什么", List.of())).thenReturn("商品退货规则");
         List<RetrievedChunk> recalledChunks = List.of(
-                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
+                new RetrievedChunk(101L, 301L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0D, 0D));
         List<RetrievedChunk> rerankedChunks = List.of(
-                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
+                new RetrievedChunk(101L, 301L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0.50D, 0.71D));
         when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(recalledChunks);
         when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(rerankedChunks);
@@ -226,7 +226,7 @@ class ChatMessageControllerTests {
         assertThat(json.path("data").path("citations").get(0).path("referenceLabel").asText())
                 .isEqualTo("商品退货规则（切片#3）");
         assertThat(countMessages(session.getId())).isEqualTo(2);
-        assertThat(countTraceLogs(session.getId())).isEqualTo(5);
+        assertThat(countTraceLogs(session.getId())).isEqualTo(6);
     }
 
     @Test
@@ -255,7 +255,7 @@ class ChatMessageControllerTests {
         assertThat(json.path("data").path("knowledgeHit").asBoolean()).isFalse();
         assertThat(json.path("data").path("answer").asText()).isEqualTo("当前知识库中没有该方面的内容，暂时无法回答这个问题。");
         assertThat(countMessages(session.getId())).isEqualTo(2);
-        assertThat(countTraceLogs(session.getId())).isEqualTo(5);
+        assertThat(countTraceLogs(session.getId())).isEqualTo(6);
     }
 
     @Test
@@ -420,10 +420,10 @@ class ChatMessageControllerTests {
         currentTestUserId = user.getId();
         String question = "商品退货规则是什么";
         List<RetrievedChunk> recalledChunks = List.of(
-                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
+                new RetrievedChunk(101L, 301L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0D, 0D));
         List<RetrievedChunk> rerankedChunks = List.of(
-                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
+                new RetrievedChunk(101L, 301L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0.50D, 0.71D));
         when(chatModelGateway.classifyQuestionIntent(question, List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion(question, List.of())).thenReturn("商品退货规则");

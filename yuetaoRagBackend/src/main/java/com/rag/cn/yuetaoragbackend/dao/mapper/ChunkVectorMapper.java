@@ -19,7 +19,7 @@ public interface ChunkVectorMapper extends BaseMapper<ChunkVectorDO> {
                                               @Param("admin") boolean admin,
                                               @Param("rankLevel") int rankLevel,
                                               @Param("departmentId") Long departmentId,
-                                              @Param("hasCollection") boolean hasCollection,
-                                              @Param("collectionName") String collectionName,
+                                              @Param("hasKnowledgeBaseIds") boolean hasKnowledgeBaseIds,
+                                              @Param("knowledgeBaseIds") List<Long> knowledgeBaseIds,
                                               @Param("recallLimit") int recallLimit);
 }

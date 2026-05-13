@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
@@ -62,7 +63,7 @@ class RagRetrievalServiceTests {
                 .setRankLevel(10);
         when(embeddingModel.embed("报销制度")).thenReturn(new float[]{0.1F, 0.2F});
         when(chunkVectorMapper.selectByVectorSearch(
-                anyString(), anyBoolean(), anyInt(), anyLong(), anyBoolean(), anyString(), anyInt()))
+                anyString(), anyBoolean(), anyInt(), anyLong(), anyBoolean(), anyList(), anyInt()))
                 .thenReturn(List.of());
 
         retrievalService.retrieve(userDO, "报销制度");
@@ -71,16 +72,17 @@ class RagRetrievalServiceTests {
         ArgumentCaptor<Boolean> adminCaptor = ArgumentCaptor.forClass(Boolean.class);
         ArgumentCaptor<Integer> rankCaptor = ArgumentCaptor.forClass(Integer.class);
         ArgumentCaptor<Long> deptCaptor = ArgumentCaptor.forClass(Long.class);
-        ArgumentCaptor<Boolean> hasCollCaptor = ArgumentCaptor.forClass(Boolean.class);
-        ArgumentCaptor<String> collCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Boolean> hasKbCaptor = ArgumentCaptor.forClass(Boolean.class);
+        ArgumentCaptor<List<Long>> kbIdsCaptor = ArgumentCaptor.forClass(List.class);
         ArgumentCaptor<Integer> limitCaptor = ArgumentCaptor.forClass(Integer.class);
         verify(chunkVectorMapper).selectByVectorSearch(
                 vectorCaptor.capture(), adminCaptor.capture(), rankCaptor.capture(),
-                deptCaptor.capture(), hasCollCaptor.capture(), collCaptor.capture(), limitCaptor.capture());
+                deptCaptor.capture(), hasKbCaptor.capture(), kbIdsCaptor.capture(), limitCaptor.capture());
         assertThat(adminCaptor.getValue()).isFalse();
         assertThat(rankCaptor.getValue()).isEqualTo(10);
         assertThat(deptCaptor.getValue()).isEqualTo(12L);
-        assertThat(hasCollCaptor.getValue()).isFalse();
+        assertThat(hasKbCaptor.getValue()).isFalse();
+        assertThat(kbIdsCaptor.getValue()).isEmpty();
         assertThat(limitCaptor.getValue()).isEqualTo(8); // topK=4 * multiplier=2
     }
 
@@ -105,7 +107,7 @@ class RagRetrievalServiceTests {
                 .setRankLevel(1);
         when(embeddingModel.embed("报销制度")).thenReturn(new float[]{0.1F, 0.2F});
         when(chunkVectorMapper.selectByVectorSearch(
-                anyString(), anyBoolean(), anyInt(), anyLong(), anyBoolean(), anyString(), anyInt()))
+                anyString(), anyBoolean(), anyInt(), anyLong(), anyBoolean(), anyList(), anyInt()))
                 .thenReturn(List.of());
 
         retrievalService.retrieve(userDO, "报销制度");
@@ -113,12 +115,12 @@ class RagRetrievalServiceTests {
         ArgumentCaptor<Boolean> adminCaptor = ArgumentCaptor.forClass(Boolean.class);
         verify(chunkVectorMapper).selectByVectorSearch(
                 anyString(), adminCaptor.capture(), anyInt(), anyLong(),
-                anyBoolean(), anyString(), anyInt());
+                anyBoolean(), anyList(), anyInt());
         assertThat(adminCaptor.getValue()).isTrue();
     }
 
     @Test
-    void shouldPassCollectionNameForScopedRetrieval() {
+    void shouldPassKnowledgeBaseIdsForScopedRetrieval() {
         RagRetrievalProperties retrievalProperties = new RagRetrievalProperties();
         retrievalProperties.setTopK(4);
         retrievalProperties.setCandidateMultiplier(2);
@@ -138,17 +140,17 @@ class RagRetrievalServiceTests {
                 .setRankLevel(1);
         when(embeddingModel.embed("退货政策")).thenReturn(new float[]{0.3F, 0.4F});
         when(chunkVectorMapper.selectByVectorSearch(
-                anyString(), anyBoolean(), anyInt(), anyLong(), anyBoolean(), anyString(), anyInt()))
+                anyString(), anyBoolean(), anyInt(), anyLong(), anyBoolean(), anyList(), anyInt()))
                 .thenReturn(List.of());
 
-        retrievalService.retrieveByCollection(userDO, "退货政策", "return_policy_kb");
+        retrievalService.retrieveByKnowledgeBaseIds(userDO, "退货政策", List.of(101L, 102L));
 
-        ArgumentCaptor<Boolean> hasCollCaptor = ArgumentCaptor.forClass(Boolean.class);
-        ArgumentCaptor<String> collCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Boolean> hasKbCaptor = ArgumentCaptor.forClass(Boolean.class);
+        ArgumentCaptor<List<Long>> kbIdsCaptor = ArgumentCaptor.forClass(List.class);
         verify(chunkVectorMapper).selectByVectorSearch(
                 anyString(), anyBoolean(), anyInt(), anyLong(),
-                hasCollCaptor.capture(), collCaptor.capture(), anyInt());
-        assertThat(hasCollCaptor.getValue()).isTrue();
-        assertThat(collCaptor.getValue()).isEqualTo("return_policy_kb");
+                hasKbCaptor.capture(), kbIdsCaptor.capture(), anyInt());
+        assertThat(hasKbCaptor.getValue()).isTrue();
+        assertThat(kbIdsCaptor.getValue()).containsExactly(101L, 102L);
     }
 }

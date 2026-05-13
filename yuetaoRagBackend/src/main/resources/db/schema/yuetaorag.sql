@@ -566,6 +566,7 @@ CREATE TABLE "public"."t_intent_node" (
     "description"           text,
     "examples"              text,
     "collection_name"       varchar(128),
+    "kb_id"                 int8,
     "mcp_tool_id"           varchar(128),
     "top_k"                 int4,
     "kind"                  int4        NOT NULL DEFAULT 0,
@@ -592,6 +593,7 @@ COMMENT ON COLUMN "public"."t_intent_node"."parent_code"           IS '父节点
 COMMENT ON COLUMN "public"."t_intent_node"."description"           IS '节点描述';
 COMMENT ON COLUMN "public"."t_intent_node"."examples"              IS '示例问题，JSON数组字符串';
 COMMENT ON COLUMN "public"."t_intent_node"."collection_name"       IS '向量库Collection名称（kind=KB时）';
+COMMENT ON COLUMN "public"."t_intent_node"."kb_id"                 IS '绑定知识库ID（kind=KB时）';
 COMMENT ON COLUMN "public"."t_intent_node"."mcp_tool_id"           IS 'MCP工具ID（kind=MCP时）';
 COMMENT ON COLUMN "public"."t_intent_node"."top_k"                 IS '节点级TopK，null时使用全局';
 COMMENT ON COLUMN "public"."t_intent_node"."kind"                  IS '节点类型：0-KB，1-SYSTEM，2-MCP';

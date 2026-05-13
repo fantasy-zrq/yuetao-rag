@@ -23,6 +23,12 @@ import {
   type IntentNodeTree,
   type IntentNodeUpdatePayload
 } from "@/services/intentTreeService";
+import { listKnowledgeBases } from "@/services/knowledgeBaseService";
+import type { KnowledgeBase } from "@/types";
+import {
+  buildCreateIntentNodePayload,
+  buildUpdateIntentNodePayload
+} from "@/pages/intentTreePayload";
 
 const LEVEL_LABELS: Record<number, string> = { 0: "DOMAIN", 1: "CATEGORY", 2: "TOPIC" };
 const KIND_LABELS: Record<number, string> = { 0: "KB", 1: "SYSTEM", 2: "MCP" };
@@ -52,6 +58,7 @@ export function IntentTreePage() {
   const [dialogParent, setDialogParent] = useState<IntentNodeTree | null>(null);
   const [editingNode, setEditingNode] = useState<IntentNodeTree | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<IntentNodeTree | null>(null);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
 
   const selectedNode = useMemo(() => findNodeByCode(tree, selectedCode), [tree, selectedCode]);
   const flatNodes = useMemo(() => flattenTree(tree), [tree]);
@@ -77,6 +84,12 @@ export function IntentTreePage() {
 
   useEffect(() => {
     loadTree();
+  }, []);
+
+  useEffect(() => {
+    listKnowledgeBases()
+      .then((data) => setKnowledgeBases(data || []))
+      .catch(() => setKnowledgeBases([]));
   }, []);
 
   function expandPathToCode(nodes: IntentNodeTree[], targetCode: string) {
@@ -249,6 +262,10 @@ export function IntentTreePage() {
                     <span>{selectedNode.sortOrder ?? 0}</span>
                   </div>
                   <div className="intent-meta-row">
+                    <span>知识库 ID</span>
+                    <span>{selectedNode.kbId || "-"}</span>
+                  </div>
+                  <div className="intent-meta-row">
                     <span>Collection</span>
                     <span>{selectedNode.collectionName || "-"}</span>
                   </div>
@@ -312,6 +329,7 @@ export function IntentTreePage() {
         node={editingNode}
         parentNode={dialogParent}
         flatNodes={flatNodes}
+        knowledgeBases={knowledgeBases}
         onClose={() => setDialogOpen(false)}
         onDone={() => {
           setDialogOpen(false);
@@ -339,6 +357,7 @@ function IntentNodeForm({
   node,
   parentNode,
   flatNodes,
+  knowledgeBases,
   onClose,
   onDone
 }: {
@@ -347,6 +366,7 @@ function IntentNodeForm({
   node: IntentNodeTree | null;
   parentNode: IntentNodeTree | null;
   flatNodes: IntentNodeTree[];
+  knowledgeBases: KnowledgeBase[];
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -358,6 +378,7 @@ function IntentNodeForm({
   const [description, setDescription] = useState("");
   const [examplesText, setExamplesText] = useState("");
   const [collectionName, setCollectionName] = useState("");
+  const [kbId, setKbId] = useState("");
   const [mcpToolId, setMcpToolId] = useState("");
   const [topK, setTopK] = useState("");
   const [sortOrder, setSortOrder] = useState("0");
@@ -378,6 +399,7 @@ function IntentNodeForm({
       setDescription(node.description || "");
       setExamplesText(parseExamples(node.examples).join("\n"));
       setCollectionName(node.collectionName || "");
+      setKbId(node.kbId || "");
       setMcpToolId(node.mcpToolId || "");
       setTopK(node.topK != null ? String(node.topK) : "");
       setSortOrder(String(node.sortOrder));
@@ -395,6 +417,7 @@ function IntentNodeForm({
       setDescription("");
       setExamplesText("");
       setCollectionName("");
+      setKbId("");
       setMcpToolId("");
       setTopK("");
       setSortOrder("0");
@@ -421,43 +444,46 @@ function IntentNodeForm({
 
     setSubmitting(true);
     try {
-      const examples = examplesText.split("\n").map((s) => s.trim()).filter(Boolean);
       if (mode === "create") {
-        const payload: IntentNodeCreatePayload = {
-          intentCode: intentCode.trim(),
-          name: name.trim(),
+        const payload: IntentNodeCreatePayload = buildCreateIntentNodePayload({
+          intentCode,
+          name,
           level,
           kind,
-          parentCode: parentCodeValue || undefined,
-          description: description.trim() || undefined,
-          examples: examples.length > 0 ? examples : undefined,
-          collectionName: collectionName.trim() || undefined,
-          mcpToolId: mcpToolId.trim() || undefined,
-          topK: topK ? Number(topK) : undefined,
-          sortOrder: Number(sortOrder),
-          enabled: enabled ? 1 : 0,
-          promptSnippet: promptSnippet.trim() || undefined,
-          promptTemplate: promptTemplate.trim() || undefined,
-          paramPromptTemplate: paramPromptTemplate.trim() || undefined
-        };
+          parentCodeValue,
+          description,
+          examplesText,
+          collectionName,
+          kbId,
+          mcpToolId,
+          topK,
+          sortOrder,
+          enabled,
+          promptSnippet,
+          promptTemplate,
+          paramPromptTemplate
+        }, knowledgeBases);
         await createIntentNode(payload);
         toast.success("创建成功");
       } else if (node) {
-        const payload: IntentNodeUpdatePayload = {
-          name: name.trim(),
+        const payload: IntentNodeUpdatePayload = buildUpdateIntentNodePayload({
+          intentCode,
+          name,
+          level,
           kind,
-          parentCode: parentCodeValue || undefined,
-          description: description.trim() || undefined,
-          examples: examples.length > 0 ? examples : undefined,
-          collectionName: collectionName.trim() || undefined,
-          mcpToolId: mcpToolId.trim() || undefined,
-          topK: topK ? Number(topK) : undefined,
-          sortOrder: Number(sortOrder),
-          enabled: enabled ? 1 : 0,
-          promptSnippet: promptSnippet.trim() || undefined,
-          promptTemplate: promptTemplate.trim() || undefined,
-          paramPromptTemplate: paramPromptTemplate.trim() || undefined
-        };
+          parentCodeValue,
+          description,
+          examplesText,
+          collectionName,
+          kbId,
+          mcpToolId,
+          topK,
+          sortOrder,
+          enabled,
+          promptSnippet,
+          promptTemplate,
+          paramPromptTemplate
+        }, knowledgeBases);
         await updateIntentNode(node.id, payload);
         toast.success("更新成功");
       }
@@ -534,14 +560,27 @@ function IntentNodeForm({
 
         {/* Collection / MCP Tool */}
         {kind === 0 && (
-          <label>
-            Collection 名称
-            <input
-              value={collectionName}
-              onChange={(e) => setCollectionName(e.target.value)}
-              placeholder="向量数据库 Collection 名称"
-            />
-          </label>
+          <>
+            <label>
+              绑定知识库
+              <select value={kbId} onChange={(e) => setKbId(e.target.value)}>
+                <option value="">请选择知识库</option>
+                {knowledgeBases.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Collection 名称
+              <input
+                value={knowledgeBases.find((item) => item.id === kbId)?.collectionName || collectionName}
+                readOnly
+                placeholder="选择知识库后自动带出"
+              />
+            </label>
+          </>
         )}
         {kind === 2 && (
           <label>

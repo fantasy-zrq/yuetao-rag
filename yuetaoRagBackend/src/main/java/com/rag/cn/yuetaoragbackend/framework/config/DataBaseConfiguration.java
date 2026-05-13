@@ -5,8 +5,10 @@ import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import com.rag.cn.yuetaoragbackend.framework.database.MyMetaObjectHandler;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 
 /**
@@ -32,5 +34,13 @@ public class DataBaseConfiguration {
     @Bean
     public MetaObjectHandler myMetaObjectHandler() {
         return new MyMetaObjectHandler();
+    }
+
+    @Bean
+    public ApplicationRunner intentNodeSchemaPatchRunner(JdbcTemplate jdbcTemplate) {
+        return args -> jdbcTemplate.execute("""
+                ALTER TABLE public.t_intent_node
+                ADD COLUMN IF NOT EXISTS kb_id int8
+                """);
     }
 }

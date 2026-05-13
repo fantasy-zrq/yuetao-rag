@@ -21,6 +21,7 @@ public class IntentNodeTreeResp {
     private String description;
     private String examples;
     private String collectionName;
+    private Long kbId;
     private String mcpToolId;
     private Integer topK;
     private Integer kind;

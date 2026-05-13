@@ -39,6 +39,9 @@ public class IntentNodeDO extends BaseDO {
     /** 向量库Collection名称（kind=KB时）。 */
     private String collectionName;
 
+    /** 绑定知识库ID（kind=KB时）。 */
+    private Long kbId;
+
     /** MCP工具ID（kind=MCP时）。 */
     private String mcpToolId;
 

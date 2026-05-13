@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.rag.cn.yuetaoragbackend.config.enums.ChatMessageContentTypeEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.ChatSessionStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
+import com.rag.cn.yuetaoragbackend.config.enums.IntentNodeKindEnum;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
@@ -77,16 +78,17 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     private final ChatSessionSummaryService chatSessionSummaryService;
     private final IntentNodeService intentNodeService;
 
+    private static final double INTENT_SCORE_THRESHOLD = 0.5D;
+    private static final int MAX_ROUTE_KB_COUNT = 3;
+    private static final String STATIC_REFUSAL_ANSWER = "当前知识库中没有该方面的内容，暂时无法回答这个问题。";
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ChatResp chat(ChatReq requestParam) {
-        if (requestParam == null || requestParam.getSessionId() == null
-                || !StringUtils.hasText(requestParam.getMessage())) {
-            throw new ClientException("会话ID和消息内容不能为空");
-        }
+        validateChatRequest(requestParam);
         Long userId = currentUserId();
 
-        ChatSessionDO sessionDO = requireSession(requestParam.getSessionId(), userId);
+        requireSession(requestParam.getSessionId(), userId);
         UserDO userDO = requireUser(userId);
 
         String traceId = StringUtils.hasText(requestParam.getTraceId()) ? requestParam.getTraceId() : UUID.randomUUID().toString();
@@ -97,97 +99,13 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
         List<String> historyTexts = loadConversationContext(requestParam.getSessionId());
 
-        long intentStart = System.nanoTime();
-        String intentType = chatModelGateway.classifyQuestionIntent(requestParam.getMessage(), historyTexts);
-        log.info("[CHAT] 意图分类: intentType={}, elapsed={}ms", intentType, elapsedMillis(intentStart));
-        writeTrace(traceId, requestParam.getSessionId(), userId, "INTENT",
-                "SUCCESS",
-                elapsedMillis(intentStart),
-                "intent=" + intentType);
-
-        String answer;
-        String rewrittenQuery = requestParam.getMessage();
-        List<ChatCitationResp> citations = List.of();
-        boolean knowledgeHit = false;
-
-        if ("CHITCHAT".equals(intentType)) {
-            log.info("[CHAT] 闲聊模式，直接生成回答");
-            long generateStart = System.nanoTime();
-            answer = chatModelGateway.generateChitchatAnswer(requestParam.getMessage(), historyTexts);
-            writeTrace(traceId, requestParam.getSessionId(), userId, "GENERATE",
-                    "SUCCESS",
-                    elapsedMillis(generateStart),
-                    "intent=CHITCHAT");
-        } else {
-            long rewriteStart = System.nanoTime();
-            rewrittenQuery = chatModelGateway.rewriteQuestion(requestParam.getMessage(), historyTexts);
-            log.info("[CHAT] Query改写: original={}, rewritten={}",
-                    shorten(requestParam.getMessage(), 80), shorten(rewrittenQuery, 120));
-            writeTrace(traceId, requestParam.getSessionId(), userId, "REWRITE",
-                    "SUCCESS",
-                    elapsedMillis(rewriteStart),
-                    "rewrittenQuery=" + shorten(rewrittenQuery, 240));
-
-            long intentScoreStart = System.nanoTime();
-            IntentNodeTreeResp matchedLeaf = scoreBestLeafIntent(requestParam.getMessage());
-            String intentSnippet = matchedLeaf != null ? matchedLeaf.getPromptSnippet() : null;
-            if (matchedLeaf != null) {
-                log.info("[CHAT] 意图树打分: matched=true, intentCode={}, collection={}",
-                        matchedLeaf.getIntentCode(), matchedLeaf.getCollectionName());
-            } else {
-                log.info("[CHAT] 意图树打分: 无匹配叶子节点");
-            }
-            writeTrace(traceId, requestParam.getSessionId(), userId, "INTENT_SCORE",
-                    "SUCCESS",
-                    elapsedMillis(intentScoreStart),
-                    matchedLeaf != null ? "intentCode=" + matchedLeaf.getIntentCode() + ",collection=" + matchedLeaf.getCollectionName() : "no-match");
-
-            long retrieveStart = System.nanoTime();
-            List<RetrievedChunk> recalledChunks;
-            if (matchedLeaf != null && StringUtils.hasText(matchedLeaf.getCollectionName())) {
-                recalledChunks = ragRetrievalService.retrieveByCollection(userDO, rewrittenQuery, matchedLeaf.getCollectionName());
-            } else {
-                recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
-            }
-            log.info("[CHAT] 向量检索: scope={}, candidateCount={}, elapsed={}ms",
-                    matchedLeaf != null && StringUtils.hasText(matchedLeaf.getCollectionName()) ? matchedLeaf.getCollectionName() : "global",
-                    recalledChunks.size(), elapsedMillis(retrieveStart));
-            writeTrace(traceId, requestParam.getSessionId(), userId, "RETRIEVE",
-                    "SUCCESS",
-                    elapsedMillis(retrieveStart),
-                    "candidateCount=" + recalledChunks.size() + (matchedLeaf != null ? ",scoped=" + matchedLeaf.getCollectionName() : ",global"));
-
-            long rerankStart = System.nanoTime();
-            List<RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
-            log.info("[CHAT] 重排序: rerankCount={}, elapsed={}ms", rerankedChunks.size(), elapsedMillis(rerankStart));
-            writeTrace(traceId, requestParam.getSessionId(), userId, "RERANK",
-                    "SUCCESS",
-                    elapsedMillis(rerankStart),
-                    "rerankCount=" + rerankedChunks.size());
-
-            if (rerankedChunks.isEmpty()) {
-                log.info("[CHAT] 重排序结果为空，返回静态拒绝回答");
-                answer = "当前知识库中没有该方面的内容，暂时无法回答这个问题。";
-                writeTrace(traceId, requestParam.getSessionId(), userId, "GENERATE",
-                        "CANCELLED",
-                        1L,
-                        "rerank-empty");
-            } else {
-                long generateStart = System.nanoTime();
-                answer = chatModelGateway.generateAnswer(
-                        requestParam.getMessage(),
-                        rewrittenQuery,
-                        historyTexts,
-                        rerankedChunks,
-                        intentSnippet);
-                writeTrace(traceId, requestParam.getSessionId(), userId, "GENERATE",
-                        "SUCCESS",
-                        elapsedMillis(generateStart),
-                        "citationCount=" + rerankedChunks.size());
-                citations = toCitationResponses(rerankedChunks);
-                knowledgeHit = true;
-            }
-        }
+        RouteDecision routeDecision = resolveRouteDecision(requestParam.getMessage(), historyTexts,
+                traceId, requestParam.getSessionId(), userId);
+        String rewrittenQuery = routeDecision.requiresRewrite()
+                ? rewriteQuestion(requestParam.getMessage(), historyTexts, traceId, requestParam.getSessionId(), userId)
+                : requestParam.getMessage();
+        SyncChatOutcome outcome = executeSyncRoute(routeDecision, requestParam.getMessage(), rewrittenQuery,
+                historyTexts, userDO, traceId, requestParam.getSessionId(), userId);
 
         SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
         ChatModelInfoRecord modelInfo = chatModelGateway.currentModelInfo();
@@ -205,7 +123,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .setSessionId(requestParam.getSessionId())
                 .setUserId(userId)
                 .setRole("ASSISTANT")
-                .setContent(answer)
+                .setContent(outcome.answer())
                 .setContentType(ChatMessageContentTypeEnum.TEXT.getCode())
                 .setSequenceNo(sequenceReservation.assistantSequenceNo())
                 .setTraceId(traceId)
@@ -214,25 +132,25 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         chatMessageMapper.insert(assistantMessage);
 
         ChatSessionDO updateSession = new ChatSessionDO();
-        updateSession.setId(sessionDO.getId());
+        updateSession.setId(requestParam.getSessionId());
         updateSession.setLastActiveAt(new Date());
         chatSessionMapper.updateById(updateSession);
 
         chatSessionSummaryService.maybeSummarize(requestParam.getSessionId(), sequenceReservation.assistantSequenceNo());
 
         log.info("[CHAT] 对话完成: sessionId={}, knowledgeHit={}, citationCount={}, elapsed={}ms",
-                requestParam.getSessionId(), knowledgeHit, citations.size(), elapsedMillis(chatStart));
+                requestParam.getSessionId(), outcome.knowledgeHit(), outcome.citations().size(), elapsedMillis(chatStart));
 
         return new ChatResp()
                 .setSessionId(requestParam.getSessionId())
                 .setUserMessageId(userMessage.getId())
                 .setAssistantMessageId(assistantMessage.getId())
                 .setTraceId(traceId)
-                .setIntentType(intentType)
-                .setKnowledgeHit(knowledgeHit)
+                .setIntentType(routeDecision.intentType())
+                .setKnowledgeHit(outcome.knowledgeHit())
                 .setRewrittenQuery(rewrittenQuery)
-                .setAnswer(answer)
-                .setCitations(citations);
+                .setAnswer(outcome.answer())
+                .setCitations(outcome.citations());
     }
 
     @Override
@@ -303,126 +221,19 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     Boolean.TRUE.equals(requestParam.getDeepThinking()));
 
             List<String> historyTexts = loadConversationContext(requestParam.getSessionId());
-
-            long intentStart = System.nanoTime();
-            String intentType = chatModelGateway.classifyQuestionIntent(requestParam.getMessage(), historyTexts);
-            log.info("[CHAT] 意图分类: intentType={}, elapsed={}ms", intentType, elapsedMillis(intentStart));
-            writeTrace(traceId, requestParam.getSessionId(), userId, "INTENT",
-                    "SUCCESS", elapsedMillis(intentStart), "intent=" + intentType);
-
             boolean deepThinking = Boolean.TRUE.equals(requestParam.getDeepThinking());
-
-            if ("CHITCHAT".equals(intentType)) {
-                log.info("[CHAT] 闲聊模式，直接生成流式回答");
-                SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
-                persistUserMessage(requestParam, userId, traceId, sequenceReservation.userSequenceNo());
-                if (deepThinking) {
-                    return streamThinkingByCandidates(
-                            traceId,
-                            requestParam.getSessionId(),
-                            userId,
-                            sequenceReservation.assistantSequenceNo(),
-                            requestParam.getMessage(),
-                            List.of(),
-                            chatModelGateway.thinkingCandidateIds(),
-                            (candidateId, ignored) -> chatModelGateway.streamThinkingChitchatByCandidate(candidateId, requestParam.getMessage(), historyTexts));
-                }
-                return streamByCandidates(
-                        traceId,
-                        requestParam.getSessionId(),
-                        userId,
-                        sequenceReservation.assistantSequenceNo(),
-                        requestParam.getMessage(),
-                        List.of(),
-                        chatModelGateway.streamingCandidateIds(),
-                        (candidateId, ignored) -> chatModelGateway.streamChitchatByCandidate(candidateId, requestParam.getMessage(), historyTexts));
-            }
-
-            long rewriteStart = System.nanoTime();
-            String rewrittenQuery = chatModelGateway.rewriteQuestion(requestParam.getMessage(), historyTexts);
-            log.info("[CHAT] Query改写: original={}, rewritten={}",
-                    shorten(requestParam.getMessage(), 80), shorten(rewrittenQuery, 120));
-            writeTrace(traceId, requestParam.getSessionId(), userId, "REWRITE",
-                    "SUCCESS", elapsedMillis(rewriteStart), "rewrittenQuery=" + shorten(rewrittenQuery, 240));
-
-            long intentScoreStart = System.nanoTime();
-            IntentNodeTreeResp matchedLeaf = scoreBestLeafIntent(requestParam.getMessage());
-            String intentSnippet = matchedLeaf != null ? matchedLeaf.getPromptSnippet() : null;
-            if (matchedLeaf != null) {
-                log.info("[CHAT] 意图树打分: matched=true, intentCode={}, collection={}",
-                        matchedLeaf.getIntentCode(), matchedLeaf.getCollectionName());
-            } else {
-                log.info("[CHAT] 意图树打分: 无匹配叶子节点");
-            }
-            writeTrace(traceId, requestParam.getSessionId(), userId, "INTENT_SCORE",
-                    "SUCCESS", elapsedMillis(intentScoreStart),
-                    matchedLeaf != null ? "intentCode=" + matchedLeaf.getIntentCode() + ",collection=" + matchedLeaf.getCollectionName() : "no-match");
-
-            long retrieveStart = System.nanoTime();
-            List<RetrievedChunk> recalledChunks;
-            if (matchedLeaf != null && StringUtils.hasText(matchedLeaf.getCollectionName())) {
-                recalledChunks = ragRetrievalService.retrieveByCollection(userDO, rewrittenQuery, matchedLeaf.getCollectionName());
-            } else {
-                recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
-            }
-            log.info("[CHAT] 向量检索: scope={}, candidateCount={}, elapsed={}ms",
-                    matchedLeaf != null && StringUtils.hasText(matchedLeaf.getCollectionName()) ? matchedLeaf.getCollectionName() : "global",
-                    recalledChunks.size(), elapsedMillis(retrieveStart));
-            writeTrace(traceId, requestParam.getSessionId(), userId, "RETRIEVE",
-                    "SUCCESS", elapsedMillis(retrieveStart), "candidateCount=" + recalledChunks.size() + (matchedLeaf != null ? ",scoped=" + matchedLeaf.getCollectionName() : ",global"));
-            long rerankStart = System.nanoTime();
-            List<RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
-            log.info("[CHAT] 重排序: rerankCount={}, elapsed={}ms", rerankedChunks.size(), elapsedMillis(rerankStart));
-            writeTrace(traceId, requestParam.getSessionId(), userId, "RERANK",
-                    "SUCCESS", elapsedMillis(rerankStart), "rerankCount=" + rerankedChunks.size());
-
-            if (rerankedChunks.isEmpty()) {
-                log.info("[CHAT] 重排序结果为空，返回静态拒绝回答");
-                SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
-                persistUserMessage(requestParam, userId, traceId, sequenceReservation.userSequenceNo());
-                return streamStaticAnswer(
-                        traceId,
-                        sessionDO,
-                        userId,
-                        sequenceReservation.assistantSequenceNo(),
-                        requestParam.getMessage(),
-                        "当前知识库中没有该方面的内容，暂时无法回答这个问题。");
-            }
+            RouteDecision routeDecision = resolveRouteDecision(requestParam.getMessage(), historyTexts,
+                    traceId, requestParam.getSessionId(), userId);
+            String rewrittenQuery = routeDecision.requiresRewrite()
+                    ? rewriteQuestion(requestParam.getMessage(), historyTexts, traceId, requestParam.getSessionId(), userId)
+                    : requestParam.getMessage();
+            RetrievalPlan retrievalPlan = executeRetrievalPlan(routeDecision, rewrittenQuery, userDO, traceId,
+                    requestParam.getSessionId(), userId);
 
             SequenceReservation sequenceReservation = reserveMessageSequences(requestParam.getSessionId());
             persistUserMessage(requestParam, userId, traceId, sequenceReservation.userSequenceNo());
-            if (deepThinking) {
-                return streamThinkingByCandidates(
-                        traceId,
-                        requestParam.getSessionId(),
-                        userId,
-                        sequenceReservation.assistantSequenceNo(),
-                        requestParam.getMessage(),
-                        toStreamCitationResponses(rerankedChunks),
-                        chatModelGateway.thinkingCandidateIds(),
-                        (candidateId, ignored) -> chatModelGateway.streamThinkingKnowledgeAnswerByCandidate(
-                                candidateId,
-                                requestParam.getMessage(),
-                                rewrittenQuery,
-                                historyTexts,
-                                rerankedChunks,
-                                intentSnippet));
-            }
-            return streamByCandidates(
-                    traceId,
-                    requestParam.getSessionId(),
-                    userId,
-                    sequenceReservation.assistantSequenceNo(),
-                    requestParam.getMessage(),
-                    toStreamCitationResponses(rerankedChunks),
-                    chatModelGateway.streamingCandidateIds(),
-                    (candidateId, ignored) -> chatModelGateway.streamKnowledgeAnswerByCandidate(
-                            candidateId,
-                            requestParam.getMessage(),
-                            rewrittenQuery,
-                            historyTexts,
-                            rerankedChunks,
-                            intentSnippet));
+            return buildStreamRouteEvents(routeDecision, retrievalPlan, requestParam, sessionDO, historyTexts,
+                    traceId, userId, deepThinking, sequenceReservation.assistantSequenceNo());
         } catch (ClientException ex) {
             return Flux.just(ChatStreamEventResp.error(requestParam == null ? null : requestParam.getTraceId(),
                     requestParam == null ? null : requestParam.getSessionId(),
@@ -433,6 +244,13 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     requestParam == null ? null : requestParam.getSessionId(),
                     BaseErrorCode.SERVICE_ERROR.code(),
                     ex.getMessage()));
+        }
+    }
+
+    private void validateChatRequest(ChatReq requestParam) {
+        if (requestParam == null || requestParam.getSessionId() == null
+                || !StringUtils.hasText(requestParam.getMessage())) {
+            throw new ClientException("会话ID和消息内容不能为空");
         }
     }
 
@@ -612,6 +430,280 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         combined.add("--- 以下为最近对话 ---");
         combined.addAll(recentTexts);
         return combined;
+    }
+
+    private String rewriteQuestion(String question, List<String> historyTexts, String traceId,
+                                   Long sessionId, Long userId) {
+        long rewriteStart = System.nanoTime();
+        String rewrittenQuery = chatModelGateway.rewriteQuestion(question, historyTexts);
+        log.info("[CHAT] Query改写: original={}, rewritten={}",
+                shorten(question, 80), shorten(rewrittenQuery, 120));
+        writeTrace(traceId, sessionId, userId, "REWRITE",
+                "SUCCESS", elapsedMillis(rewriteStart), "rewrittenQuery=" + shorten(rewrittenQuery, 240));
+        return rewrittenQuery;
+    }
+
+    private RouteDecision resolveRouteDecision(String question, List<String> historyTexts,
+                                               String traceId, Long sessionId, Long userId) {
+        List<ScoredLeafIntent> scoredLeaves = scoreLeafIntents(question, traceId, sessionId, userId);
+        if (!scoredLeaves.isEmpty()) {
+            List<ScoredLeafIntent> kbLeaves = scoredLeaves.stream()
+                    .filter(each -> IntentNodeKindEnum.KB.getCode().equals(each.leaf().getKind()))
+                    .filter(each -> each.leaf().getKbId() != null)
+                    .toList();
+            if (!kbLeaves.isEmpty()) {
+                List<Long> knowledgeBaseIds = selectTopKnowledgeBaseIds(kbLeaves);
+                String promptSnippet = mergePromptSnippetsForKnowledgeBases(kbLeaves, knowledgeBaseIds);
+                String promptTemplate = resolveKnowledgePromptTemplate(kbLeaves, knowledgeBaseIds);
+                log.info("[CHAT] 路由决策: route=KB, kbIds={}, leafCount={}", knowledgeBaseIds, kbLeaves.size());
+                return RouteDecision.kb("KB_QA", kbLeaves, knowledgeBaseIds, promptSnippet, promptTemplate);
+            }
+            List<ScoredLeafIntent> systemLeaves = scoredLeaves.stream()
+                    .filter(each -> IntentNodeKindEnum.SYSTEM.getCode().equals(each.leaf().getKind()))
+                    .toList();
+            if (!systemLeaves.isEmpty()) {
+                ScoredLeafIntent topSystemLeaf = systemLeaves.stream()
+                        .max(Comparator.comparingDouble(ScoredLeafIntent::score))
+                        .orElse(null);
+                if (topSystemLeaf != null) {
+                    log.info("[CHAT] 路由决策: route=SYSTEM, intentCode={}", topSystemLeaf.leaf().getIntentCode());
+                    return RouteDecision.system("CHITCHAT", topSystemLeaf.leaf());
+                }
+            }
+        }
+
+        long intentStart = System.nanoTime();
+        String intentType = chatModelGateway.classifyQuestionIntent(question, historyTexts);
+        log.info("[CHAT] 意图分类: intentType={}, elapsed={}ms", intentType, elapsedMillis(intentStart));
+        writeTrace(traceId, sessionId, userId, "INTENT",
+                "SUCCESS", elapsedMillis(intentStart), "intent=" + intentType + ",fallback=true");
+        if ("CHITCHAT".equals(intentType)) {
+            return RouteDecision.chitchat(intentType);
+        }
+        return RouteDecision.globalKb(intentType);
+    }
+
+    private SyncChatOutcome executeSyncRoute(RouteDecision routeDecision, String question, String rewrittenQuery,
+                                             List<String> historyTexts, UserDO userDO,
+                                             String traceId, Long sessionId, Long userId) {
+        if (routeDecision.isChitchat()) {
+            long generateStart = System.nanoTime();
+            String answer = chatModelGateway.generateChitchatAnswer(question, historyTexts);
+            writeTrace(traceId, sessionId, userId, "GENERATE",
+                    "SUCCESS", elapsedMillis(generateStart), "intent=CHITCHAT");
+            return new SyncChatOutcome(answer, List.of(), false);
+        }
+        if (routeDecision.isSystem()) {
+            long generateStart = System.nanoTime();
+            String answer = StringUtils.hasText(routeDecision.systemLeaf().getPromptTemplate())
+                    ? chatModelGateway.generateChitchatAnswer(
+                    question, historyTexts, routeDecision.systemLeaf().getPromptTemplate())
+                    : chatModelGateway.generateChitchatAnswer(question, historyTexts);
+            writeTrace(traceId, sessionId, userId, "GENERATE",
+                    "SUCCESS", elapsedMillis(generateStart),
+                    "intent=SYSTEM,intentCode=" + routeDecision.systemLeaf().getIntentCode());
+            return new SyncChatOutcome(answer, List.of(), false);
+        }
+
+        RetrievalPlan retrievalPlan = executeRetrievalPlan(routeDecision, rewrittenQuery, userDO, traceId, sessionId, userId);
+        if (retrievalPlan.refusal()) {
+            writeTrace(traceId, sessionId, userId, "GENERATE", "CANCELLED", 1L, "rerank-empty");
+            return new SyncChatOutcome(STATIC_REFUSAL_ANSWER, List.of(), false);
+        }
+
+        long generateStart = System.nanoTime();
+        String answer = StringUtils.hasText(retrievalPlan.promptTemplate())
+                ? chatModelGateway.generateAnswer(
+                question,
+                rewrittenQuery,
+                historyTexts,
+                retrievalPlan.rerankedChunks(),
+                retrievalPlan.promptSnippet(),
+                retrievalPlan.promptTemplate())
+                : chatModelGateway.generateAnswer(
+                question,
+                rewrittenQuery,
+                historyTexts,
+                retrievalPlan.rerankedChunks(),
+                retrievalPlan.promptSnippet());
+        writeTrace(traceId, sessionId, userId, "GENERATE",
+                "SUCCESS", elapsedMillis(generateStart),
+                "citationCount=" + retrievalPlan.rerankedChunks().size());
+        return new SyncChatOutcome(answer, toCitationResponses(retrievalPlan.rerankedChunks()), true);
+    }
+
+    private RetrievalPlan executeRetrievalPlan(RouteDecision routeDecision, String rewrittenQuery, UserDO userDO,
+                                               String traceId, Long sessionId, Long userId) {
+        if (!routeDecision.requiresRetrieval()) {
+            return RetrievalPlan.noRetrieval();
+        }
+
+        List<RetrievedChunk> recalledChunks = retrieveChunks(routeDecision, rewrittenQuery, userDO, traceId, sessionId, userId);
+        List<RetrievedChunk> rerankedChunks = rerankChunks(rewrittenQuery, recalledChunks, traceId, sessionId, userId);
+        if (!rerankedChunks.isEmpty()) {
+            return RetrievalPlan.success(rerankedChunks, routeDecision.promptSnippet(),
+                    routeDecision.promptTemplate(), rewrittenQuery);
+        }
+
+        if (!routeDecision.isKbScoped()) {
+            log.info("[CHAT] 重排序结果为空，返回静态拒绝回答");
+            return RetrievalPlan.refusalResult();
+        }
+
+        log.info("[CHAT] KB范围检索为空，回退全局检索");
+        List<RetrievedChunk> fallbackRecalled = retrieveGlobalChunks(userDO, rewrittenQuery, traceId, sessionId, userId, true);
+        List<RetrievedChunk> fallbackReranked = rerankChunks(rewrittenQuery, fallbackRecalled, traceId, sessionId, userId);
+        if (fallbackReranked.isEmpty()) {
+            log.info("[CHAT] 全局回退后仍无结果，返回静态拒绝回答");
+            return RetrievalPlan.refusalResult();
+        }
+        return RetrievalPlan.success(fallbackReranked, null, null, rewrittenQuery);
+    }
+
+    private List<RetrievedChunk> retrieveChunks(RouteDecision routeDecision, String rewrittenQuery, UserDO userDO,
+                                                String traceId, Long sessionId, Long userId) {
+        if (routeDecision.isKbScoped()) {
+            return retrieveScopedChunks(userDO, rewrittenQuery, routeDecision.knowledgeBaseIds(),
+                    traceId, sessionId, userId);
+        }
+        return retrieveGlobalChunks(userDO, rewrittenQuery, traceId, sessionId, userId, false);
+    }
+
+    private List<RetrievedChunk> retrieveScopedChunks(UserDO userDO, String rewrittenQuery, List<Long> knowledgeBaseIds,
+                                                      String traceId, Long sessionId, Long userId) {
+        long retrieveStart = System.nanoTime();
+        List<RetrievedChunk> recalledChunks = ragRetrievalService.retrieveByKnowledgeBaseIds(userDO, rewrittenQuery, knowledgeBaseIds);
+        log.info("[CHAT] 向量检索: scope=kbIds={}, candidateCount={}, elapsed={}ms",
+                knowledgeBaseIds, recalledChunks.size(), elapsedMillis(retrieveStart));
+        writeTrace(traceId, sessionId, userId, "RETRIEVE", "SUCCESS",
+                elapsedMillis(retrieveStart),
+                "candidateCount=" + recalledChunks.size() + ",kbIds=" + knowledgeBaseIds);
+        return recalledChunks;
+    }
+
+    private List<RetrievedChunk> retrieveGlobalChunks(UserDO userDO, String rewrittenQuery,
+                                                      String traceId, Long sessionId, Long userId,
+                                                      boolean fallback) {
+        long retrieveStart = System.nanoTime();
+        List<RetrievedChunk> recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
+        log.info("[CHAT] 向量检索: scope={}, candidateCount={}, elapsed={}ms",
+                fallback ? "global-fallback" : "global", recalledChunks.size(), elapsedMillis(retrieveStart));
+        writeTrace(traceId, sessionId, userId, "RETRIEVE", "SUCCESS",
+                elapsedMillis(retrieveStart),
+                "candidateCount=" + recalledChunks.size() + (fallback ? ",fallback=global" : ",global"));
+        return recalledChunks;
+    }
+
+    private List<RetrievedChunk> rerankChunks(String rewrittenQuery, List<RetrievedChunk> recalledChunks,
+                                              String traceId, Long sessionId, Long userId) {
+        long rerankStart = System.nanoTime();
+        List<RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
+        log.info("[CHAT] 重排序: rerankCount={}, elapsed={}ms", rerankedChunks.size(), elapsedMillis(rerankStart));
+        writeTrace(traceId, sessionId, userId, "RERANK",
+                "SUCCESS", elapsedMillis(rerankStart), "rerankCount=" + rerankedChunks.size());
+        return rerankedChunks;
+    }
+
+    private Flux<ChatStreamEventResp> buildStreamRouteEvents(RouteDecision routeDecision, RetrievalPlan retrievalPlan,
+                                                             ChatStreamReq requestParam, ChatSessionDO sessionDO,
+                                                             List<String> historyTexts, String traceId, Long userId,
+                                                             boolean deepThinking, int assistantSequenceNo) {
+        if (routeDecision.isChitchat()) {
+            return streamChitchatRoute(traceId, requestParam.getSessionId(), userId, assistantSequenceNo,
+                    requestParam.getMessage(), historyTexts, deepThinking, null);
+        }
+        if (routeDecision.isSystem()) {
+            return streamChitchatRoute(traceId, requestParam.getSessionId(), userId, assistantSequenceNo,
+                    requestParam.getMessage(), historyTexts, deepThinking, routeDecision.systemLeaf().getPromptTemplate());
+        }
+        if (retrievalPlan.refusal()) {
+            return streamStaticAnswer(traceId, sessionDO, userId, assistantSequenceNo,
+                    requestParam.getMessage(), STATIC_REFUSAL_ANSWER);
+        }
+
+        List<ChatStreamCitationResp> citations = toStreamCitationResponses(retrievalPlan.rerankedChunks());
+        if (deepThinking) {
+            return streamThinkingByCandidates(
+                    traceId,
+                    requestParam.getSessionId(),
+                    userId,
+                    assistantSequenceNo,
+                    requestParam.getMessage(),
+                    citations,
+                    chatModelGateway.thinkingCandidateIds(),
+                    (candidateId, ignored) -> StringUtils.hasText(retrievalPlan.promptTemplate())
+                            ? chatModelGateway.streamThinkingKnowledgeAnswerByCandidate(
+                            candidateId,
+                            requestParam.getMessage(),
+                            retrievalPlan.rewrittenQueryOr(requestParam.getMessage()),
+                            historyTexts,
+                            retrievalPlan.rerankedChunks(),
+                            retrievalPlan.promptSnippet(),
+                            retrievalPlan.promptTemplate())
+                            : chatModelGateway.streamThinkingKnowledgeAnswerByCandidate(
+                            candidateId,
+                            requestParam.getMessage(),
+                            retrievalPlan.rewrittenQueryOr(requestParam.getMessage()),
+                            historyTexts,
+                            retrievalPlan.rerankedChunks(),
+                            retrievalPlan.promptSnippet()));
+        }
+        return streamByCandidates(
+                traceId,
+                requestParam.getSessionId(),
+                userId,
+                assistantSequenceNo,
+                requestParam.getMessage(),
+                citations,
+                chatModelGateway.streamingCandidateIds(),
+                (candidateId, ignored) -> StringUtils.hasText(retrievalPlan.promptTemplate())
+                        ? chatModelGateway.streamKnowledgeAnswerByCandidate(
+                        candidateId,
+                        requestParam.getMessage(),
+                        retrievalPlan.rewrittenQueryOr(requestParam.getMessage()),
+                        historyTexts,
+                        retrievalPlan.rerankedChunks(),
+                        retrievalPlan.promptSnippet(),
+                        retrievalPlan.promptTemplate())
+                        : chatModelGateway.streamKnowledgeAnswerByCandidate(
+                        candidateId,
+                        requestParam.getMessage(),
+                        retrievalPlan.rewrittenQueryOr(requestParam.getMessage()),
+                        historyTexts,
+                        retrievalPlan.rerankedChunks(),
+                        retrievalPlan.promptSnippet()));
+    }
+
+    private Flux<ChatStreamEventResp> streamChitchatRoute(String traceId, Long sessionId, Long userId,
+                                                          int assistantSequenceNo, String question,
+                                                          List<String> historyTexts, boolean deepThinking,
+                                                          String promptTemplate) {
+        if (deepThinking) {
+            return streamThinkingByCandidates(
+                    traceId,
+                    sessionId,
+                    userId,
+                    assistantSequenceNo,
+                    question,
+                    List.of(),
+                    chatModelGateway.thinkingCandidateIds(),
+                    (candidateId, ignored) -> StringUtils.hasText(promptTemplate)
+                            ? chatModelGateway.streamThinkingChitchatByCandidate(
+                            candidateId, question, historyTexts, promptTemplate)
+                            : chatModelGateway.streamThinkingChitchatByCandidate(candidateId, question, historyTexts));
+        }
+        return streamByCandidates(
+                traceId,
+                sessionId,
+                userId,
+                assistantSequenceNo,
+                question,
+                List.of(),
+                chatModelGateway.streamingCandidateIds(),
+                (candidateId, ignored) -> StringUtils.hasText(promptTemplate)
+                        ? chatModelGateway.streamChitchatByCandidate(
+                        candidateId, question, historyTexts, promptTemplate)
+                        : chatModelGateway.streamChitchatByCandidate(candidateId, question, historyTexts));
     }
 
     private SequenceReservation reserveMessageSequences(Long sessionId) {
@@ -1038,33 +1130,40 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return text.substring(0, maxLength);
     }
 
-    private IntentNodeTreeResp scoreBestLeafIntent(String question) {
+    private List<ScoredLeafIntent> scoreLeafIntents(String question, String traceId, Long sessionId, Long userId) {
         List<IntentNodeTreeResp> tree = intentNodeService.getTree();
         List<IntentNodeTreeResp> leaves = collectLeafNodes(tree);
         log.info("[INTENT] 加载意图树: leafCount={}", leaves.size());
         if (leaves.isEmpty()) {
-            return null;
+            return List.of();
         }
-        IntentNodeTreeResp best = null;
-        double bestScore = 0.0;
+        long intentScoreStart = System.nanoTime();
+        List<ScoredLeafIntent> matches = new ArrayList<>();
         for (IntentNodeTreeResp leaf : leaves) {
             try {
                 double score = chatModelGateway.scoreLeafIntent(question, leaf);
                 log.info("[INTENT] 叶子打分: intentCode={}, name={}, score={}", leaf.getIntentCode(), leaf.getName(), score);
-                if (score > bestScore) {
-                    bestScore = score;
-                    best = leaf;
+                if (score >= INTENT_SCORE_THRESHOLD) {
+                    matches.add(new ScoredLeafIntent(leaf, score));
                 }
             } catch (Exception e) {
                 log.warn("意图打分异常, intentCode={}", leaf.getIntentCode(), e);
             }
         }
-        if (best != null && bestScore >= 0.5) {
-            log.info("[INTENT] 最佳匹配: intentCode={}, score={}", best.getIntentCode(), bestScore);
-            return best;
+        matches.sort(Comparator.comparingDouble(ScoredLeafIntent::score).reversed());
+        if (matches.isEmpty()) {
+            log.info("[INTENT] 无匹配叶子节点");
+            writeTrace(traceId, sessionId, userId, "INTENT_SCORE", "SUCCESS",
+                    elapsedMillis(intentScoreStart), "leafCount=" + leaves.size() + ",no-match");
+        } else {
+            log.info("[INTENT] 命中叶子节点: {}", matches.stream()
+                    .map(each -> each.leaf().getIntentCode() + "=" + each.score())
+                    .toList());
+            writeTrace(traceId, sessionId, userId, "INTENT_SCORE", "SUCCESS",
+                    elapsedMillis(intentScoreStart),
+                    "matchCount=" + matches.size() + ",top=" + matches.get(0).leaf().getIntentCode());
         }
-        log.info("[INTENT] 无匹配（最高分={} < 0.5）", bestScore);
-        return null;
+        return matches;
     }
 
     private List<IntentNodeTreeResp> collectLeafNodes(List<IntentNodeTreeResp> nodes) {
@@ -1084,6 +1183,116 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         return leaves;
     }
 
+    private List<Long> selectTopKnowledgeBaseIds(List<ScoredLeafIntent> kbLeaves) {
+        Map<Long, Double> bestScoreByKbId = new LinkedHashMap<>();
+        for (ScoredLeafIntent each : kbLeaves) {
+            bestScoreByKbId.merge(each.leaf().getKbId(), each.score(), Math::max);
+        }
+        return bestScoreByKbId.entrySet().stream()
+                .sorted(Map.Entry.<Long, Double>comparingByValue().reversed())
+                .limit(MAX_ROUTE_KB_COUNT)
+                .map(Map.Entry::getKey)
+                .toList();
+    }
+
+    private String mergePromptSnippetsForKnowledgeBases(List<ScoredLeafIntent> kbLeaves, List<Long> knowledgeBaseIds) {
+        LinkedHashSet<String> snippets = new LinkedHashSet<>();
+        kbLeaves.stream()
+                .filter(each -> knowledgeBaseIds.contains(each.leaf().getKbId()))
+                .sorted(Comparator.comparingDouble(ScoredLeafIntent::score).reversed())
+                .map(each -> each.leaf().getPromptSnippet())
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .forEach(snippets::add);
+        return snippets.isEmpty() ? null : String.join("\n", snippets);
+    }
+
+    private String resolveKnowledgePromptTemplate(List<ScoredLeafIntent> kbLeaves, List<Long> knowledgeBaseIds) {
+        if (knowledgeBaseIds.size() != 1) {
+            return null;
+        }
+        Long targetKbId = knowledgeBaseIds.get(0);
+        return kbLeaves.stream()
+                .filter(each -> targetKbId.equals(each.leaf().getKbId()))
+                .sorted(Comparator.comparingDouble(ScoredLeafIntent::score).reversed())
+                .map(each -> each.leaf().getPromptTemplate())
+                .filter(StringUtils::hasText)
+                .map(String::trim)
+                .findFirst()
+                .orElse(null);
+    }
+
     private record SequenceReservation(int userSequenceNo, int assistantSequenceNo) {
+    }
+
+    private record ScoredLeafIntent(IntentNodeTreeResp leaf, double score) {
+    }
+
+    private record SyncChatOutcome(String answer, List<ChatCitationResp> citations, boolean knowledgeHit) {
+    }
+
+    private record RetrievalPlan(List<RetrievedChunk> rerankedChunks, String promptSnippet,
+                                 String promptTemplate, boolean refusal, String rewrittenQuery) {
+
+        private static RetrievalPlan noRetrieval() {
+            return new RetrievalPlan(List.of(), null, null, false, null);
+        }
+
+        private static RetrievalPlan success(List<RetrievedChunk> rerankedChunks, String promptSnippet,
+                                             String promptTemplate, String rewrittenQuery) {
+            return new RetrievalPlan(rerankedChunks, promptSnippet, promptTemplate, false, rewrittenQuery);
+        }
+
+        private static RetrievalPlan refusalResult() {
+            return new RetrievalPlan(List.of(), null, null, true, null);
+        }
+
+        public String rewrittenQueryOr(String fallback) {
+            return StringUtils.hasText(rewrittenQuery) ? rewrittenQuery : fallback;
+        }
+    }
+
+    private record RouteDecision(String routeType, String intentType, List<Long> knowledgeBaseIds,
+                                 IntentNodeTreeResp systemLeaf, String promptSnippet,
+                                 String promptTemplate) {
+
+        private static RouteDecision chitchat(String intentType) {
+            return new RouteDecision("CHITCHAT", intentType, List.of(), null, null, null);
+        }
+
+        private static RouteDecision globalKb(String intentType) {
+            return new RouteDecision("GLOBAL_KB", intentType, List.of(), null, null, null);
+        }
+
+        private static RouteDecision kb(String intentType, List<ScoredLeafIntent> ignoredLeaves,
+                                        List<Long> knowledgeBaseIds, String promptSnippet,
+                                        String promptTemplate) {
+            return new RouteDecision("KB", intentType, knowledgeBaseIds, null, promptSnippet, promptTemplate);
+        }
+
+        private static RouteDecision system(String intentType, IntentNodeTreeResp systemLeaf) {
+            return new RouteDecision("SYSTEM", intentType, List.of(), systemLeaf,
+                    systemLeaf.getPromptSnippet(), systemLeaf.getPromptTemplate());
+        }
+
+        private boolean isChitchat() {
+            return "CHITCHAT".equals(routeType);
+        }
+
+        private boolean isSystem() {
+            return "SYSTEM".equals(routeType);
+        }
+
+        private boolean isKbScoped() {
+            return "KB".equals(routeType);
+        }
+
+        private boolean requiresRetrieval() {
+            return isKbScoped() || "GLOBAL_KB".equals(routeType);
+        }
+
+        private boolean requiresRewrite() {
+            return requiresRetrieval() || isSystem();
+        }
     }
 }

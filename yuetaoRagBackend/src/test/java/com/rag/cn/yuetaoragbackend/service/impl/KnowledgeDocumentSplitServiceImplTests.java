@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -92,6 +93,22 @@ class KnowledgeDocumentSplitServiceImplTests {
     }
 
     @Test
+    void shouldBatchVectorStoreAddByTenWhenChunkCountExceedsProviderLimit() {
+        String content = "abcdefghijklmnopqrstuvwx";
+        KnowledgeDocumentDO documentDO = document(content, "FIXED", "{\"chunkSize\":2,\"chunkOverlap\":0}");
+        when(knowledgeDocumentMapper.selectOne(any())).thenReturn(documentDO);
+        when(fileService.getObject("kb-doc-01", "doc-key.txt")).thenReturn(content.getBytes(StandardCharsets.UTF_8));
+
+        splitExecutionService.processSplit(200L, 900L);
+
+        ArgumentCaptor<List<Document>> docsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(chunkVectorStore, times(2)).add(docsCaptor.capture());
+        assertThat(docsCaptor.getAllValues())
+                .extracting(List::size)
+                .containsExactly(10, 2);
+    }
+
+    @Test
     void shouldMarkDocumentAndChunkLogFailedWithErrorMessage() {
         splitExecutionService.markSplitFailed(200L, 900L, "vector service unavailable");
 
@@ -100,6 +117,21 @@ class KnowledgeDocumentSplitServiceImplTests {
                         && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())
                         && "vector service unavailable".equals(document.getFailReason())));
         verify(documentChunkLogService).markFailed(900L, "vector service unavailable");
+    }
+
+    @Test
+    void shouldSanitizeUpstreamBatchLimitErrorBeforePersistingToDocumentAndChunkLog() {
+        String upstreamError = """
+                400 - {"error":{"message":"<400> InternalError.Algo.InvalidParameter: Value error, batch size is invalid, it should not be larger than 10.: input.contents","type":"InvalidParameter"}}
+                """;
+
+        splitExecutionService.markSplitFailed(200L, 900L, upstreamError);
+
+        verify(knowledgeDocumentMapper).updateById(org.mockito.ArgumentMatchers.<KnowledgeDocumentDO>argThat(document ->
+                document.getId().equals(200L)
+                        && ParseStatusEnum.FAILED.getCode().equals(document.getParseStatus())
+                        && "文档向量化失败：单批次最多支持 10 个分块".equals(document.getFailReason())));
+        verify(documentChunkLogService).markFailed(900L, "文档向量化失败：单批次最多支持 10 个分块");
     }
 
     @Test

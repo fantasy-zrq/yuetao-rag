@@ -26,6 +26,11 @@ export interface KnowledgeBase {
   updateTime?: string | null;
 }
 
+export interface IntentNodeKbBinding {
+  kbId?: string | null;
+  collectionName?: string | null;
+}
+
 export interface KnowledgeDocument {
   id: string;
   knowledgeBaseId: string;

@@ -78,6 +78,7 @@ public class IntentNodeServiceImpl extends ServiceImpl<IntentNodeMapper, IntentN
                 .setDescription(requestParam.getDescription())
                 .setExamples(serializeExamples(requestParam.getExamples()))
                 .setCollectionName(requestParam.getCollectionName())
+                .setKbId(requestParam.getKbId())
                 .setMcpToolId(requestParam.getMcpToolId())
                 .setTopK(requestParam.getTopK())
                 .setKind(requestParam.getKind())
@@ -131,18 +132,27 @@ public class IntentNodeServiceImpl extends ServiceImpl<IntentNodeMapper, IntentN
                 .set(IntentNodeDO::getLevel, level);
 
         if (requestParam.getName() != null) updateWrapper.set(IntentNodeDO::getName, requestParam.getName());
-        if (requestParam.getDescription() != null) updateWrapper.set(IntentNodeDO::getDescription, requestParam.getDescription());
-        if (requestParam.getExamples() != null) updateWrapper.set(IntentNodeDO::getExamples, serializeExamples(requestParam.getExamples()));
-        if (requestParam.getCollectionName() != null) updateWrapper.set(IntentNodeDO::getCollectionName, requestParam.getCollectionName());
-        if (requestParam.getMcpToolId() != null) updateWrapper.set(IntentNodeDO::getMcpToolId, requestParam.getMcpToolId());
-        if (requestParam.getTopK() != null) updateWrapper.set(IntentNodeDO::getTopK, requestParam.getTopK());
+        if (requestParam.hasDescription())
+            updateWrapper.set(IntentNodeDO::getDescription, normalizeNullableText(requestParam.getDescription()));
+        if (requestParam.hasExamples())
+            updateWrapper.set(IntentNodeDO::getExamples, serializeExamples(requestParam.getExamples()));
+        if (requestParam.hasCollectionName())
+            updateWrapper.set(IntentNodeDO::getCollectionName, normalizeNullableText(requestParam.getCollectionName()));
+        if (requestParam.hasKbId()) updateWrapper.set(IntentNodeDO::getKbId, requestParam.getKbId());
+        if (requestParam.hasMcpToolId())
+            updateWrapper.set(IntentNodeDO::getMcpToolId, normalizeNullableText(requestParam.getMcpToolId()));
+        if (requestParam.hasTopK()) updateWrapper.set(IntentNodeDO::getTopK, requestParam.getTopK());
         if (requestParam.getKind() != null) updateWrapper.set(IntentNodeDO::getKind, requestParam.getKind());
         if (requestParam.getSortOrder() != null) updateWrapper.set(IntentNodeDO::getSortOrder, requestParam.getSortOrder());
         if (requestParam.getEnabled() != null) updateWrapper.set(IntentNodeDO::getEnabled, requestParam.getEnabled());
-        if (requestParam.getPromptSnippet() != null) updateWrapper.set(IntentNodeDO::getPromptSnippet, requestParam.getPromptSnippet());
-        if (requestParam.getPromptTemplate() != null) updateWrapper.set(IntentNodeDO::getPromptTemplate, requestParam.getPromptTemplate());
-        if (requestParam.getParamPromptTemplate() != null)
-            updateWrapper.set(IntentNodeDO::getParamPromptTemplate, requestParam.getParamPromptTemplate());
+        if (requestParam.hasPromptSnippet())
+            updateWrapper.set(IntentNodeDO::getPromptSnippet, normalizeNullableText(requestParam.getPromptSnippet()));
+        if (requestParam.hasPromptTemplate())
+            updateWrapper.set(IntentNodeDO::getPromptTemplate, normalizeNullableText(requestParam.getPromptTemplate()));
+        if (requestParam.hasParamPromptTemplate()) {
+            updateWrapper.set(IntentNodeDO::getParamPromptTemplate,
+                    normalizeNullableText(requestParam.getParamPromptTemplate()));
+        }
 
         intentNodeMapper.update(null, updateWrapper);
         invalidateCache();
@@ -377,6 +387,10 @@ public class IntentNodeServiceImpl extends ServiceImpl<IntentNodeMapper, IntentN
             log.warn("序列化 examples 失败", e);
             return null;
         }
+    }
+
+    private String normalizeNullableText(String value) {
+        return StringUtils.hasText(value) ? value : null;
     }
 
     private void invalidateCache() {

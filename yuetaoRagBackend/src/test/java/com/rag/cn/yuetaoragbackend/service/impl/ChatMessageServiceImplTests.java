@@ -16,6 +16,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
 import com.rag.cn.yuetaoragbackend.config.enums.ChatSessionStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
+import com.rag.cn.yuetaoragbackend.config.enums.IntentNodeKindEnum;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
@@ -37,6 +38,7 @@ import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.ChatStreamEventResp;
+import com.rag.cn.yuetaoragbackend.dto.resp.IntentNodeTreeResp;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import java.util.List;
 import java.time.Duration;
@@ -227,10 +229,10 @@ class ChatMessageServiceImplTests {
         when(chatModelGateway.classifyQuestionIntent("商品退货规则是什么", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("商品退货规则是什么", List.of())).thenReturn("商品退货规则");
         List<RetrievedChunk> recalledChunks = List.of(
-                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
+                new RetrievedChunk(101L, 301L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0D, 0D));
         List<RetrievedChunk> rerankedChunks = List.of(
-                new RetrievedChunk(101L, 201L, "商品退货规则", 3,
+                new RetrievedChunk(101L, 301L, 201L, "商品退货规则", 3,
                         "商品支持7天无理由退货，特殊品类除外。", 0.82D, 0.50D, 0.71D));
         when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(recalledChunks);
         when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(rerankedChunks);
@@ -268,6 +270,94 @@ class ChatMessageServiceImplTests {
         assertThat(response.getAnswer()).isEqualTo("当前知识库中没有该方面的内容，暂时无法回答这个问题。");
         assertThat(response.getCitations()).isEmpty();
         verify(chatModelGateway, never()).generateAnswer(any(String.class), any(String.class), any(List.class), any(List.class), any());
+    }
+
+    @Test
+    void shouldSelectKbLeafAndScopeRetrievalToTopKnowledgeBases() {
+        when(chatModelGateway.rewriteQuestion("开题报告怎么写", List.of())).thenReturn("开题报告怎么写");
+        when(intentNodeService.getTree()).thenReturn(List.of(
+                node("group", IntentNodeKindEnum.KB.getCode(), null, null,
+                        List.of(node("group-it", IntentNodeKindEnum.KB.getCode(), 401L, "IT规则", List.of()))),
+                node("system-hello", IntentNodeKindEnum.SYSTEM.getCode(), null, "系统规则", List.of())
+        ));
+        when(chatModelGateway.scoreLeafIntent(eq("开题报告怎么写"), any(IntentNodeTreeResp.class))).thenAnswer(invocation -> {
+            IntentNodeTreeResp node = invocation.getArgument(1);
+            return switch (node.getIntentCode()) {
+                case "group-it" -> 0.92D;
+                case "system-hello" -> 0.88D;
+                default -> 0D;
+            };
+        });
+        List<RetrievedChunk> recalledChunks = List.of(
+                new RetrievedChunk(101L, 401L, 201L, "开题指南", 1, "先确定研究问题。", 0.82D, 0D, 0D));
+        List<RetrievedChunk> rerankedChunks = List.of(
+                new RetrievedChunk(101L, 401L, 201L, "开题指南", 1, "先确定研究问题。", 0.82D, 0.61D, 0.77D));
+        when(ragRetrievalService.retrieveByKnowledgeBaseIds(any(UserDO.class), eq("开题报告怎么写"), eq(List.of(401L))))
+                .thenReturn(recalledChunks);
+        when(ragRetrievalService.rerank(anyString(), any(List.class))).thenReturn(rerankedChunks);
+        when(chatModelGateway.generateAnswer(any(String.class), any(String.class), any(List.class), eq(rerankedChunks), any()))
+                .thenReturn("先确定研究问题[1]。");
+        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        ChatResp response = chatMessageService.chat(new ChatReq()
+                .setSessionId(10L)
+                .setMessage("开题报告怎么写"));
+
+        assertThat(response.getKnowledgeHit()).isTrue();
+        assertThat(response.getAnswer()).contains("研究问题");
+        verify(ragRetrievalService).retrieveByKnowledgeBaseIds(any(UserDO.class), eq("开题报告怎么写"), eq(List.of(401L)));
+    }
+
+    @Test
+    void shouldIgnoreSystemLeafWhenKbLeafAlsoMatches() {
+        when(chatModelGateway.rewriteQuestion("你能做什么以及开题报告怎么写", List.of())).thenReturn("你能做什么以及开题报告怎么写");
+        when(intentNodeService.getTree()).thenReturn(List.of(
+                node("biz-kaiti", IntentNodeKindEnum.KB.getCode(), 501L, "KB规则", List.of()),
+                node("system-capability", IntentNodeKindEnum.SYSTEM.getCode(), null, "SYSTEM规则", List.of())
+        ));
+        when(chatModelGateway.scoreLeafIntent(eq("你能做什么以及开题报告怎么写"), any(IntentNodeTreeResp.class))).thenAnswer(invocation -> {
+            IntentNodeTreeResp node = invocation.getArgument(1);
+            return switch (node.getIntentCode()) {
+                case "biz-kaiti" -> 0.81D;
+                case "system-capability" -> 0.99D;
+                default -> 0D;
+            };
+        });
+        when(ragRetrievalService.retrieveByKnowledgeBaseIds(any(UserDO.class), anyString(), eq(List.of(501L))))
+                .thenReturn(List.of());
+        when(ragRetrievalService.retrieve(any(UserDO.class), anyString())).thenReturn(List.of());
+        when(ragRetrievalService.rerank(anyString(), any(List.class))).thenReturn(List.of());
+        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        ChatResp response = chatMessageService.chat(new ChatReq()
+                .setSessionId(10L)
+                .setMessage("你能做什么以及开题报告怎么写"));
+
+        assertThat(response.getAnswer()).isEqualTo("当前知识库中没有该方面的内容，暂时无法回答这个问题。");
+        verify(ragRetrievalService).retrieveByKnowledgeBaseIds(any(UserDO.class), anyString(), eq(List.of(501L)));
+        verify(chatModelGateway, never()).generateChitchatAnswer(anyString(), any(List.class));
+    }
+
+    @Test
+    void shouldUseSystemLeafWhenNoKbLeafMatches() {
+        when(chatModelGateway.rewriteQuestion("你能做什么", List.of())).thenReturn("你能做什么");
+        when(intentNodeService.getTree()).thenReturn(List.of(
+                node("system-capability", IntentNodeKindEnum.SYSTEM.getCode(), null, "请用系统模板回答", List.of())
+        ));
+        when(chatModelGateway.scoreLeafIntent(eq("你能做什么"), any(IntentNodeTreeResp.class))).thenReturn(0.95D);
+        when(chatModelGateway.generateChitchatAnswer("你能做什么", List.of()))
+                .thenReturn("我是内部知识助手，可以回答企业知识问题。");
+        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        ChatResp response = chatMessageService.chat(new ChatReq()
+                .setSessionId(10L)
+                .setMessage("你能做什么"));
+
+        assertThat(response.getKnowledgeHit()).isFalse();
+        assertThat(response.getAnswer()).contains("内部知识助手");
+        verify(ragRetrievalService, never()).retrieve(any(UserDO.class), anyString());
+        verify(ragRetrievalService, never()).retrieveByKnowledgeBaseIds(any(UserDO.class), anyString(), any(List.class));
+        verify(chatModelGateway).generateChitchatAnswer("你能做什么", List.of());
     }
 
     @Test
@@ -532,9 +622,9 @@ class ChatMessageServiceImplTests {
         when(chatModelGateway.classifyQuestionIntent("退货规则", List.of())).thenReturn("KB_QA");
         when(chatModelGateway.rewriteQuestion("退货规则", List.of())).thenReturn("退货规则");
         List<RetrievedChunk> recalledChunks = List.of(
-                new RetrievedChunk(101L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0D, 0D));
+                new RetrievedChunk(101L, 301L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0D, 0D));
         List<RetrievedChunk> rerankedChunks = List.of(
-                new RetrievedChunk(101L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0.50D, 0.71D));
+                new RetrievedChunk(101L, 301L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0.50D, 0.71D));
         when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(recalledChunks);
         when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(rerankedChunks);
         when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("qwen-thinking"));
@@ -768,5 +858,17 @@ class ChatMessageServiceImplTests {
         userDO.setRoleCode("USER");
         userDO.setDeleteFlag(DeleteFlagEnum.NORMAL.getCode());
         return userDO;
+    }
+
+    private IntentNodeTreeResp node(String intentCode, Integer kind, Long kbId, String promptSnippet,
+                                    List<IntentNodeTreeResp> children) {
+        return new IntentNodeTreeResp()
+                .setIntentCode(intentCode)
+                .setName(intentCode)
+                .setEnabled(1)
+                .setKind(kind)
+                .setKbId(kbId)
+                .setPromptSnippet(promptSnippet)
+                .setChildren(children);
     }
 }

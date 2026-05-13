@@ -68,12 +68,16 @@ public class ChatModelGateway {
                                  List<String> recentMessages,
                                  List<RetrievedChunk> citations,
                                  String intentSnippet) {
-        String prompt = renderPrompt("prompt/answer-chat-kb.st", Map.of(
-                "history", renderHistory(recentMessages),
-                "question", safeText(originalQuestion),
-                "rewritten_question", safeText(rewrittenQuery),
-                "retrieved_knowledge", renderCitations(citations),
-                "intent_snippet", renderIntentSnippet(intentSnippet)));
+        return generateAnswer(originalQuestion, rewrittenQuery, recentMessages, citations, intentSnippet, null);
+    }
+
+    public String generateAnswer(String originalQuestion, String rewrittenQuery,
+                                 List<String> recentMessages,
+                                 List<RetrievedChunk> citations,
+                                 String intentSnippet,
+                                 String promptTemplate) {
+        String prompt = renderKnowledgePrompt(promptTemplate, originalQuestion, rewrittenQuery,
+                recentMessages, citations, intentSnippet);
         return chatCompletion("", List.of(userMessage(prompt)));
     }
 
@@ -85,10 +89,11 @@ public class ChatModelGateway {
     }
 
     public String generateChitchatAnswer(String question, List<String> recentMessages) {
-        String prompt = renderPrompt("prompt/answer-chat-system.st", Map.of(
-                "history", renderHistory(recentMessages),
-                "question", safeText(question),
-                "retrieved_knowledge", "无"));
+        return generateChitchatAnswer(question, recentMessages, null);
+    }
+
+    public String generateChitchatAnswer(String question, List<String> recentMessages, String promptTemplate) {
+        String prompt = renderSystemPrompt(promptTemplate, question, recentMessages, "无");
         return chatCompletion("", List.of(userMessage(prompt)));
     }
 
@@ -153,10 +158,12 @@ public class ChatModelGateway {
     }
 
     public Flux<String> streamChitchatByCandidate(String candidateId, String question, List<String> recentMessages) {
-        String prompt = renderPrompt("prompt/answer-chat-system.st", Map.of(
-                "history", renderHistory(recentMessages),
-                "question", safeText(question),
-                "retrieved_knowledge", "无"));
+        return streamChitchatByCandidate(candidateId, question, recentMessages, null);
+    }
+
+    public Flux<String> streamChitchatByCandidate(String candidateId, String question,
+                                                  List<String> recentMessages, String promptTemplate) {
+        String prompt = renderSystemPrompt(promptTemplate, question, recentMessages, "无");
         return streamByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
     }
 
@@ -164,21 +171,29 @@ public class ChatModelGateway {
                                                          String rewrittenQuery, List<String> recentMessages,
                                                          List<RetrievedChunk> citations,
                                                          String intentSnippet) {
-        String prompt = renderPrompt("prompt/answer-chat-kb.st", Map.of(
-                "history", renderHistory(recentMessages),
-                "question", safeText(originalQuestion),
-                "rewritten_question", safeText(rewrittenQuery),
-                "retrieved_knowledge", renderCitations(citations),
-                "intent_snippet", renderIntentSnippet(intentSnippet)));
+        return streamKnowledgeAnswerByCandidate(candidateId, originalQuestion, rewrittenQuery,
+                recentMessages, citations, intentSnippet, null);
+    }
+
+    public Flux<String> streamKnowledgeAnswerByCandidate(String candidateId, String originalQuestion,
+                                                         String rewrittenQuery, List<String> recentMessages,
+                                                         List<RetrievedChunk> citations,
+                                                         String intentSnippet,
+                                                         String promptTemplate) {
+        String prompt = renderKnowledgePrompt(promptTemplate, originalQuestion, rewrittenQuery,
+                recentMessages, citations, intentSnippet);
         return streamByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
     }
 
     public Flux<StreamContent> streamThinkingChitchatByCandidate(String candidateId, String question,
                                                                  List<String> recentMessages) {
-        String prompt = renderPrompt("prompt/answer-chat-system.st", Map.of(
-                "history", renderHistory(recentMessages),
-                "question", safeText(question),
-                "retrieved_knowledge", "无"));
+        return streamThinkingChitchatByCandidate(candidateId, question, recentMessages, null);
+    }
+
+    public Flux<StreamContent> streamThinkingChitchatByCandidate(String candidateId, String question,
+                                                                 List<String> recentMessages,
+                                                                 String promptTemplate) {
+        String prompt = renderSystemPrompt(promptTemplate, question, recentMessages, "无");
         return streamThinkingByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
     }
 
@@ -186,12 +201,17 @@ public class ChatModelGateway {
                                                                         String rewrittenQuery, List<String> recentMessages,
                                                                         List<RetrievedChunk> citations,
                                                                         String intentSnippet) {
-        String prompt = renderPrompt("prompt/answer-chat-kb.st", Map.of(
-                "history", renderHistory(recentMessages),
-                "question", safeText(originalQuestion),
-                "rewritten_question", safeText(rewrittenQuery),
-                "retrieved_knowledge", renderCitations(citations),
-                "intent_snippet", renderIntentSnippet(intentSnippet)));
+        return streamThinkingKnowledgeAnswerByCandidate(candidateId, originalQuestion, rewrittenQuery,
+                recentMessages, citations, intentSnippet, null);
+    }
+
+    public Flux<StreamContent> streamThinkingKnowledgeAnswerByCandidate(String candidateId, String originalQuestion,
+                                                                        String rewrittenQuery, List<String> recentMessages,
+                                                                        List<RetrievedChunk> citations,
+                                                                        String intentSnippet,
+                                                                        String promptTemplate) {
+        String prompt = renderKnowledgePrompt(promptTemplate, originalQuestion, rewrittenQuery,
+                recentMessages, citations, intentSnippet);
         return streamThinkingByCandidate(candidateId, new Prompt(new UserMessage(prompt)));
     }
 
@@ -287,11 +307,37 @@ public class ChatModelGateway {
     }
 
     private String renderPrompt(String location, Map<String, String> variables) {
-        String rendered = loadPrompt(location);
+        return renderTemplate(loadPrompt(location), variables);
+    }
+
+    private String renderKnowledgePrompt(String promptTemplate, String originalQuestion, String rewrittenQuery,
+                                         List<String> recentMessages, List<RetrievedChunk> citations,
+                                         String intentSnippet) {
+        return renderTemplate(resolvePromptTemplate(promptTemplate, "prompt/answer-chat-kb.st"), Map.of(
+                "history", renderHistory(recentMessages),
+                "question", safeText(originalQuestion),
+                "rewritten_question", safeText(rewrittenQuery),
+                "retrieved_knowledge", renderCitations(citations),
+                "intent_snippet", renderIntentSnippet(intentSnippet)));
+    }
+
+    private String renderSystemPrompt(String promptTemplate, String question,
+                                      List<String> recentMessages, String retrievedKnowledge) {
+        return renderTemplate(resolvePromptTemplate(promptTemplate, "prompt/answer-chat-system.st"), Map.of(
+                "history", renderHistory(recentMessages),
+                "question", safeText(question),
+                "retrieved_knowledge", safeText(retrievedKnowledge)));
+    }
+
+    private String renderTemplate(String rendered, Map<String, String> variables) {
         for (Map.Entry<String, String> each : variables.entrySet()) {
             rendered = rendered.replace("{" + each.getKey() + "}", safeText(each.getValue()));
         }
         return rendered;
+    }
+
+    private String resolvePromptTemplate(String promptTemplate, String defaultLocation) {
+        return StringUtils.hasText(promptTemplate) ? promptTemplate : loadPrompt(defaultLocation);
     }
 
     private String loadPrompt(String location) {

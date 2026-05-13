@@ -732,6 +732,54 @@ class IntentTreeControllerTests {
         assertThat(updated.getParamPromptTemplate()).isEqualTo("提取参数");
     }
 
+    @Test
+    @Order(39)
+    void shouldClearNullableFieldsWhenUpdatePayloadExplicitlyResetsThem() throws Exception {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        Long nodeId = createNodeDirectly("UPD_CLEARABLE", "可清空字段", 0, null);
+
+        IntentNodeDO node = intentNodeMapper.selectById(nodeId);
+        node.setDescription("原始描述");
+        node.setExamples("[\"问题1\",\"问题2\"]");
+        node.setCollectionName("kb_collection");
+        node.setKbId(321L);
+        node.setMcpToolId("sales_query");
+        node.setTopK(8);
+        node.setPromptSnippet("原始规则");
+        node.setPromptTemplate("原始模板");
+        node.setParamPromptTemplate("原始参数模板");
+        intentNodeMapper.updateById(node);
+
+        MvcResult result = mockMvc.perform(MockMvcRequestBuilders.put("/intent-tree/" + nodeId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "description": null,
+                                  "examples": [],
+                                  "collectionName": null,
+                                  "kbId": null,
+                                  "mcpToolId": null,
+                                  "topK": null,
+                                  "promptSnippet": null,
+                                  "promptTemplate": null,
+                                  "paramPromptTemplate": null
+                                }
+                                """))
+                .andReturn();
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+        IntentNodeDO updated = intentNodeMapper.selectById(nodeId);
+        assertThat(updated.getDescription()).isNull();
+        assertThat(updated.getExamples()).isNull();
+        assertThat(updated.getCollectionName()).isNull();
+        assertThat(updated.getKbId()).isNull();
+        assertThat(updated.getMcpToolId()).isNull();
+        assertThat(updated.getTopK()).isNull();
+        assertThat(updated.getPromptSnippet()).isNull();
+        assertThat(updated.getPromptTemplate()).isNull();
+        assertThat(updated.getParamPromptTemplate()).isNull();
+    }
+
     // ==================== 5. 禁用 / 启用 ====================
 
     @Test

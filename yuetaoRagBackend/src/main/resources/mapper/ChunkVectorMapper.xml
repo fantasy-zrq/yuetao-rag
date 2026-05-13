@@ -6,6 +6,7 @@
     <select id="selectByVectorSearch"
             resultType="com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk">
         select c.id as chunkId,
+               c.knowledge_base_id as knowledgeBaseId,
                c.document_id as documentId,
                kd.title as documentTitle,
                c.chunk_no as chunkNo,
@@ -38,8 +39,11 @@
                        ))
               </otherwise>
           </choose>
-          <if test="hasCollection">
-              and cv.metadata-&gt;&gt;'collection_name' = #{collectionName}
+          <if test="hasKnowledgeBaseIds">
+              and c.knowledge_base_id in
+              <foreach collection="knowledgeBaseIds" item="kbId" open="(" separator="," close=")">
+                  #{kbId}
+              </foreach>
           </if>
         order by cv.embedding &lt;=&gt; cast(#{vectorLiteral} as vector)
         limit #{recallLimit}

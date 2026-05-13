@@ -9,6 +9,7 @@ export interface IntentNodeTree {
   description?: string | null;
   examples?: string | null;
   collectionName?: string | null;
+  kbId?: string | null;
   mcpToolId?: string | null;
   topK?: number | null;
   kind: number;
@@ -29,6 +30,7 @@ export interface IntentNodeCreatePayload {
   description?: string;
   examples?: string[];
   collectionName?: string;
+  kbId?: string;
   mcpToolId?: string;
   topK?: number;
   sortOrder?: number;
@@ -40,18 +42,19 @@ export interface IntentNodeCreatePayload {
 
 export interface IntentNodeUpdatePayload {
   name?: string;
-  description?: string;
-  examples?: string[];
-  collectionName?: string;
-  mcpToolId?: string;
-  topK?: number;
+  description?: string | null;
+  examples?: string[] | null;
+  collectionName?: string | null;
+  kbId?: string | null;
+  mcpToolId?: string | null;
+  topK?: number | null;
   kind?: number;
   sortOrder?: number;
   enabled?: number;
-  promptSnippet?: string;
-  promptTemplate?: string;
-  paramPromptTemplate?: string;
-  parentCode?: string;
+  promptSnippet?: string | null;
+  promptTemplate?: string | null;
+  paramPromptTemplate?: string | null;
+  parentCode?: string | null;
 }
 
 export async function getIntentTree(): Promise<IntentNodeTree[]> {

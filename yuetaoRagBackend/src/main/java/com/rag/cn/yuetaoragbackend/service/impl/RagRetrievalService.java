@@ -12,6 +12,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.embedding.EmbeddingModel;
 import org.springframework.stereotype.Service;
+import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.util.ArrayList;
@@ -39,28 +40,32 @@ public class RagRetrievalService {
     }
 
     public List<RetrievedChunk> retrieveByCollection(UserDO user, String query, String collectionName) {
-        return retrieveInternal(user, query, collectionName);
+        return retrieve(user, query);
     }
 
-    private List<RetrievedChunk> retrieveInternal(UserDO user, String query, String collectionName) {
+    public List<RetrievedChunk> retrieveByKnowledgeBaseIds(UserDO user, String query, List<Long> knowledgeBaseIds) {
+        return retrieveInternal(user, query, knowledgeBaseIds);
+    }
+
+    private List<RetrievedChunk> retrieveInternal(UserDO user, String query, List<Long> knowledgeBaseIds) {
         float[] queryVector = embeddingModel.embed(query);
         String vectorLiteral = toVectorLiteral(queryVector);
         int recallLimit = Math.max(1, safeInt(retrievalProperties.getTopK(), 8)
                 * Math.max(1, safeInt(retrievalProperties.getCandidateMultiplier(), 3)));
 
-        boolean hasCollection = StringUtils.hasText(collectionName);
+        boolean hasKnowledgeBaseIds = !CollectionUtils.isEmpty(knowledgeBaseIds);
         boolean admin = isAdmin(user);
 
-        log.info("[RETRIEVE] 向量检索: queryLen={}, collection={}, recallLimit={}, vectorDim={}",
-                query.length(), hasCollection ? collectionName : "global", recallLimit, queryVector.length);
+        log.info("[RETRIEVE] 向量检索: queryLen={}, scope={}, recallLimit={}, vectorDim={}",
+                query.length(), hasKnowledgeBaseIds ? knowledgeBaseIds.toString() : "global", recallLimit, queryVector.length);
 
         return chunkVectorMapper.selectByVectorSearch(
                 vectorLiteral,
                 admin,
                 user.getRankLevel() == null ? 0 : user.getRankLevel(),
                 user.getDepartmentId() == null ? -1L : user.getDepartmentId(),
-                hasCollection,
-                hasCollection ? collectionName : "",
+                hasKnowledgeBaseIds,
+                hasKnowledgeBaseIds ? knowledgeBaseIds : List.of(),
                 recallLimit);
     }
 

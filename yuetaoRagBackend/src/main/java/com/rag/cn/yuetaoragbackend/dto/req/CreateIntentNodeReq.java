@@ -37,6 +37,9 @@ public class CreateIntentNodeReq {
     /** 向量库Collection名称。 */
     private String collectionName;
 
+    /** 绑定知识库ID。 */
+    private Long kbId;
+
     /** MCP工具ID。 */
     private String mcpToolId;
 

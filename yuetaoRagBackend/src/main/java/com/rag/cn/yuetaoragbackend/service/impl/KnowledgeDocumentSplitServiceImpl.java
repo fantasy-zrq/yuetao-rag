@@ -47,6 +47,9 @@ public class KnowledgeDocumentSplitServiceImpl {
     public static final String SPLIT_CONSUMER_GROUP = "yuetao-rag-chunk-consumer_group";
 
     private static final int CHUNK_BATCH_SIZE = 15;
+    private static final int VECTOR_BATCH_SIZE = 10;
+    private static final String DEFAULT_SPLIT_FAILURE_MESSAGE = "文档处理失败，请稍后重试";
+    private static final String BATCH_LIMIT_FAILURE_MESSAGE = "文档向量化失败：单批次最多支持 10 个分块";
 
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
     private final DocumentChunkLogService documentChunkLogService;
@@ -114,7 +117,7 @@ public class KnowledgeDocumentSplitServiceImpl {
 
         batchInsertChunks(chunkEntities);
         long vectorStartNanos = System.nanoTime();
-        chunkVectorStore.add(vectorDocuments);
+        batchAddVectorDocuments(vectorDocuments);
         long vectorCostMillis = elapsedMillis(vectorStartNanos);
         try {
             documentChunkLogService.recordVectorResult(chunkLogId, vectorCostMillis);
@@ -142,13 +145,14 @@ public class KnowledgeDocumentSplitServiceImpl {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public void markSplitFailed(Long documentId, Long chunkLogId, String errorMessage) {
+        String sanitizedErrorMessage = sanitizeSplitErrorMessage(errorMessage);
         KnowledgeDocumentDO failedDO = new KnowledgeDocumentDO();
         failedDO.setId(documentId);
         failedDO.setParseStatus(ParseStatusEnum.FAILED.getCode());
-        failedDO.setFailReason(errorMessage);
+        failedDO.setFailReason(sanitizedErrorMessage);
         knowledgeDocumentMapper.updateById(failedDO);
         try {
-            documentChunkLogService.markFailed(chunkLogId, errorMessage);
+            documentChunkLogService.markFailed(chunkLogId, sanitizedErrorMessage);
         } catch (Exception ex) {
             log.warn("文档分块日志更新失败: action=标记分块失败, documentId={}, chunkLogId={}", documentId, chunkLogId, ex);
         }
@@ -316,6 +320,34 @@ public class KnowledgeDocumentSplitServiceImpl {
                     .toList();
             jdbcTemplate.batchUpdate(sql, batchArgs);
         }
+    }
+
+    private void batchAddVectorDocuments(List<Document> vectorDocuments) {
+        for (int start = 0; start < vectorDocuments.size(); start += VECTOR_BATCH_SIZE) {
+            int end = Math.min(start + VECTOR_BATCH_SIZE, vectorDocuments.size());
+            chunkVectorStore.add(vectorDocuments.subList(start, end));
+        }
+    }
+
+    private String sanitizeSplitErrorMessage(String errorMessage) {
+        if (!StringUtils.hasText(errorMessage)) {
+            return DEFAULT_SPLIT_FAILURE_MESSAGE;
+        }
+        String normalized = errorMessage.replaceAll("\\s+", " ").trim();
+        if (normalized.contains("batch size is invalid") || normalized.contains("should not be larger than 10")) {
+            return BATCH_LIMIT_FAILURE_MESSAGE;
+        }
+        if (looksLikeStructuredUpstreamError(normalized)) {
+            return DEFAULT_SPLIT_FAILURE_MESSAGE;
+        }
+        return normalized.length() <= 500 ? normalized : normalized.substring(0, 500);
+    }
+
+    private boolean looksLikeStructuredUpstreamError(String errorMessage) {
+        return errorMessage.startsWith("400 - {")
+                || errorMessage.startsWith("500 - {")
+                || errorMessage.contains("\"error\":{")
+                || errorMessage.contains("\"request_id\":");
     }
 
     private long elapsedMillis(long startNanos) {
