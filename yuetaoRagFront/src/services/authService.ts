@@ -4,6 +4,7 @@ import type { User } from "@/types";
 export interface LoginPayload {
   username: string;
   password: string;
+  rememberMe?: boolean;
 }
 
 export async function login(payload: LoginPayload) {

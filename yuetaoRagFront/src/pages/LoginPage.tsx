@@ -11,6 +11,7 @@ export function LoginPage() {
   const [username, setUsername] = useState("yuetao_admin");
   const [password, setPassword] = useState("admin");
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(false);
 
   if (isAuthenticated) {
     navigate("/chat", { replace: true });
@@ -18,7 +19,7 @@ export function LoginPage() {
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    await login(username, password);
+    await login(username, password, rememberMe);
     navigate("/chat", { replace: true });
   }
 
@@ -55,8 +56,8 @@ export function LoginPage() {
           </label>
           <div className="login-meta">
             <label>
-              <input type="checkbox" defaultChecked />
-              记住我
+              <input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />
+              7天免登录
             </label>
             <span>账号由管理员初始化</span>
           </div>

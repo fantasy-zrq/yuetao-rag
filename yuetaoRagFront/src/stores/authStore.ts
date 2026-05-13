@@ -11,22 +11,23 @@ interface AuthState {
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string, rememberMe: boolean) => Promise<void>;
   logout: () => Promise<void>;
   checkAuth: () => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>((set, get) => ({
+export const useAuthStore = create<AuthState>((set) => ({
   user: storage.getUser(),
   token: storage.getToken(),
   isAuthenticated: Boolean(storage.getToken()),
   isLoading: false,
-  login: async (username, password) => {
+  login: async (username, password, rememberMe) => {
     set({ isLoading: true });
     try {
-      const user = await loginRequest({ username, password });
-      storage.setToken(user.token);
-      storage.setUser(user);
+      const user = await loginRequest({ username, password, rememberMe });
+      // 浏览器端仅负责决定 token 落到 session 还是 local，不参与服务端续期策略。
+      storage.setToken(user.token, rememberMe);
+      storage.setUser(user, rememberMe);
       setAuthToken(user.token);
       set({ user, token: user.token, isAuthenticated: true });
       toast.success("登录成功");
@@ -52,14 +53,23 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const user = storage.getUser();
     setAuthToken(token);
     set({ token, user, isAuthenticated: Boolean(token) });
-    if (!token || !user) return;
+    if (!token || !user) {
+      // 本地缺 token 或用户快照时直接视为未登录，避免前端保留半残状态。
+      storage.clearAuth();
+      setAuthToken(null);
+      set({ user: null, token: null, isAuthenticated: false });
+      return;
+    }
     try {
       const currentUser = await getCurrentUser();
       const nextUser = { ...currentUser, token } as User;
-      storage.setUser(nextUser);
+      storage.setUser(nextUser, storage.isRememberMe());
       set({ user: nextUser, token, isAuthenticated: true });
     } catch {
-      set({ user, token, isAuthenticated: true });
+      // 后端已判定 token 失效时，必须同步清掉本地状态，避免错误持续报给前端。
+      storage.clearAuth();
+      setAuthToken(null);
+      set({ user: null, token: null, isAuthenticated: false });
     }
   }
 }));

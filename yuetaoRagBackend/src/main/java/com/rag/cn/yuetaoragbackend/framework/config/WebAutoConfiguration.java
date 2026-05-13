@@ -1,12 +1,14 @@
 package com.rag.cn.yuetaoragbackend.framework.config;
 
 
+import com.rag.cn.yuetaoragbackend.config.properties.AuthProperties;
 import com.rag.cn.yuetaoragbackend.framework.web.GlobalExceptionHandler;
 import com.rag.cn.yuetaoragbackend.framework.web.UserContextInterceptor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
@@ -16,7 +18,10 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * Web 组件自动装配
  */
 @Configuration
+@RequiredArgsConstructor
 public class WebAutoConfiguration implements WebMvcConfigurer {
+
+    private final AuthProperties authProperties;
 
     /**
      * 构建全局异常拦截器组件 Bean
@@ -39,7 +44,7 @@ public class WebAutoConfiguration implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        registry.addInterceptor(new UserContextInterceptor())
+        registry.addInterceptor(new UserContextInterceptor(authProperties))
                 .addPathPatterns("/**");
     }
 }

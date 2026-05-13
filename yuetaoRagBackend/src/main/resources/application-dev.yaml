@@ -7,7 +7,16 @@ server:
     context-path: /yuetaoRag
 
 sa-token:
+  # 前后端统一使用 Authorization 头传递 token，不走 Cookie 读写链路。
   token-name: Authorization
+  is-read-header: true
+  is-read-cookie: false
+  # 开启动态 active-timeout 和自动续期后，活跃用户会在鉴权时刷新活跃时间。
+  dynamic-active-timeout: true
+  auto-renew: true
+  # 兜底硬过期时间，具体 rememberMe / 当前会话时长由 app.auth 再细分。
+  timeout: 2592000
+  token-style: random-64
 
 spring:
   application:
@@ -136,6 +145,16 @@ app:
     admin-role-codes:
       - ADMIN
     default-document-min-rank: 10
+  auth:
+    # tokenSession 中保存登录用户快照时使用的 key。
+    token-session-login-user-key: loginUser
+    # 勾选“7天免登录”时，7 天无访问失效；只要持续访问就会滑动续期。
+    remember-me-active-timeout-seconds: 604800
+    # 记住登录的硬过期上限，防止无限续期。
+    remember-me-timeout-seconds: 2592000
+    # 未勾选时只保留当前浏览器会话，同时给服务端一个短兜底 TTL。
+    session-active-timeout-seconds: 43200
+    session-timeout-seconds: 43200
   trace:
     enabled: true
     log-payload: false

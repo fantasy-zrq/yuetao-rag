@@ -2,6 +2,8 @@ package com.rag.cn.yuetaoragbackend.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -29,6 +31,8 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
 class AuthControllerTests {
 
     private static final Long USER_ID = 202605060001L;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
     private MockMvc mockMvc;
@@ -99,6 +103,49 @@ class AuthControllerTests {
         assertThat(body).contains("用户名不能为空");
     }
 
+    @Test
+    void shouldUseAuthorizationHeaderAcrossLoginCurrentUserAndLogout() throws Exception {
+        persistUser("auth_user_flow", sha256Hex("right-password"));
+
+        MvcResult loginResult = mockMvc.perform(MockMvcRequestBuilders.post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "username":"auth_user_flow",
+                                  "password":"right-password",
+                                  "rememberMe":true
+                                }
+                                """))
+                .andReturn();
+
+        String loginBody = loginResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        String token = readToken(loginBody);
+        assertThat(token).isNotBlank();
+
+        MvcResult currentUserResult = mockMvc.perform(MockMvcRequestBuilders.get("/user/me")
+                        .header("Authorization", token))
+                .andReturn();
+        String currentUserBody = currentUserResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(currentUserResult.getResponse().getStatus()).isEqualTo(200);
+        assertThat(currentUserBody).contains("\"code\":\"0\"");
+        assertThat(currentUserBody).contains("\"username\":\"auth_user_flow\"");
+
+        MvcResult logoutResult = mockMvc.perform(MockMvcRequestBuilders.post("/auth/logout")
+                        .header("Authorization", token))
+                .andReturn();
+        String logoutBody = logoutResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(logoutResult.getResponse().getStatus()).isEqualTo(200);
+        assertThat(logoutBody).contains("\"code\":\"0\"");
+
+        MvcResult afterLogoutResult = mockMvc.perform(MockMvcRequestBuilders.get("/user/me")
+                        .header("Authorization", token))
+                .andReturn();
+        String afterLogoutBody = afterLogoutResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(afterLogoutResult.getResponse().getStatus()).isEqualTo(200);
+        assertThat(afterLogoutBody).contains("\"code\":\"A000001\"");
+        assertThat(afterLogoutBody).contains("未登录或登录已过期");
+    }
+
     private void persistUser(String username, String passwordHash) {
         jdbcTemplate.update("""
                         insert into t_user
@@ -116,5 +163,10 @@ class AuthControllerTests {
             builder.append(String.format("%02x", each));
         }
         return builder.toString();
+    }
+
+    private String readToken(String body) throws Exception {
+        JsonNode rootNode = objectMapper.readTree(body);
+        return rootNode.path("data").path("token").asText();
     }
 }

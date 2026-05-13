@@ -45,6 +45,9 @@ class ConfigurationPropertiesBindingTests {
         AuthzProperties authzProperties = Binder.get(environment)
             .bind("app.authz", Bindable.of(AuthzProperties.class))
             .orElseThrow(() -> new IllegalStateException("Failed to bind app.authz properties"));
+        AuthProperties authProperties = Binder.get(environment)
+            .bind("app.auth", Bindable.of(AuthProperties.class))
+            .orElseThrow(() -> new IllegalStateException("Failed to bind app.auth properties"));
         TraceProperties traceProperties = Binder.get(environment)
             .bind("app.trace", Bindable.of(TraceProperties.class))
             .orElseThrow(() -> new IllegalStateException("Failed to bind app.trace properties"));
@@ -66,7 +69,19 @@ class ConfigurationPropertiesBindingTests {
         assertThat(retrievalProperties.getTopK()).isEqualTo(8);
         assertThat(memoryProperties.getRecentWindowSize()).isEqualTo(30);
         assertThat(authzProperties.getAdminRoleCodes()).isEqualTo(List.of("ADMIN"));
+        assertThat(authProperties.getTokenSessionLoginUserKey()).isEqualTo("loginUser");
+        assertThat(authProperties.getRememberMeActiveTimeoutSeconds()).isEqualTo(604800L);
+        assertThat(authProperties.getRememberMeTimeoutSeconds()).isEqualTo(2592000L);
+        assertThat(authProperties.getSessionActiveTimeoutSeconds()).isEqualTo(43200L);
+        assertThat(authProperties.getSessionTimeoutSeconds()).isEqualTo(43200L);
         assertThat(traceProperties.getEnabled()).isTrue();
+
+        assertThat(environment.getProperty("sa-token.token-name")).isEqualTo("Authorization");
+        assertThat(environment.getProperty("sa-token.is-read-header")).isEqualTo("true");
+        assertThat(environment.getProperty("sa-token.is-read-cookie")).isEqualTo("false");
+        assertThat(environment.getProperty("sa-token.dynamic-active-timeout")).isEqualTo("true");
+        assertThat(environment.getProperty("sa-token.auto-renew")).isEqualTo("true");
+        assertThat(environment.getProperty("sa-token.timeout")).isEqualTo("2592000");
     }
 
     private void loadYaml(ConfigurableEnvironment environment, String location) throws IOException {

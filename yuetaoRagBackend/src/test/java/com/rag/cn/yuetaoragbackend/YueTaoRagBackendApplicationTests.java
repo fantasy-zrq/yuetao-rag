@@ -1,5 +1,8 @@
 package com.rag.cn.yuetaoragbackend;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
+import cn.dev33.satoken.SaManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
@@ -16,6 +19,12 @@ class YueTaoRagBackendApplicationTests {
 
     @Test
     void contextLoads() {
+    }
+
+    @Test
+    void shouldUseRedisBackedSaTokenDao() {
+        assertThat(SaManager.getSaTokenDao().getClass().getName())
+                .isEqualTo("cn.dev33.satoken.dao.SaTokenDaoForRedisTemplate");
     }
 
 }

@@ -73,6 +73,7 @@ class RequestValidationContractTests {
     void shouldDeclareConstraintsOnRequiredRequestFields() throws NoSuchFieldException {
         assertFieldConstraint(LoginReq.class, "username", NotBlank.class);
         assertFieldConstraint(LoginReq.class, "password", NotBlank.class);
+        assertFieldType(LoginReq.class, "rememberMe", Boolean.class);
         assertFieldConstraint(ChatReq.class, "sessionId", NotNull.class);
         assertFieldConstraint(ChatReq.class, "message", NotBlank.class);
         assertFieldConstraint(ChatStreamReq.class, "sessionId", NotNull.class);
@@ -182,5 +183,12 @@ class RequestValidationContractTests {
         assertThat(field.isAnnotationPresent(annotationType))
                 .as("%s.%s should declare %s", requestType.getSimpleName(), fieldName, annotationType.getSimpleName())
                 .isTrue();
+    }
+
+    private void assertFieldType(Class<?> requestType, String fieldName, Class<?> fieldType) throws NoSuchFieldException {
+        Field field = requestType.getDeclaredField(fieldName);
+        assertThat(field.getType())
+                .as("%s.%s should use %s", requestType.getSimpleName(), fieldName, fieldType.getSimpleName())
+                .isEqualTo(fieldType);
     }
 }

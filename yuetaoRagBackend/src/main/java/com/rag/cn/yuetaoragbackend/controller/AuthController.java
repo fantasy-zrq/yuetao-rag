@@ -1,9 +1,12 @@
 package com.rag.cn.yuetaoragbackend.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
+import cn.dev33.satoken.stp.parameter.SaLoginParameter;
+import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.rag.cn.yuetaoragbackend.config.enums.CommonStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
+import com.rag.cn.yuetaoragbackend.config.properties.AuthProperties;
 import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
 import com.rag.cn.yuetaoragbackend.dto.req.LoginReq;
@@ -26,9 +29,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class AuthController {
 
-    private static final String LOGIN_USER_SESSION_KEY = "loginUser";
-
     private final UserMapper userMapper;
+    private final AuthProperties authProperties;
 
     @PostMapping("/login")
     public Result<LoginResp> login(@Valid @RequestBody LoginReq requestParam) {
@@ -49,13 +51,26 @@ public class AuthController {
             throw new ClientException("用户名或密码错误");
         }
 
-        StpUtil.login(userDO.getId());
         LoginUser loginUser = LoginUser.builder()
                 .userId(String.valueOf(userDO.getId()))
                 .username(userDO.getUsername())
                 .role(userDO.getRoleCode())
                 .build();
-        StpUtil.getSession().set(LOGIN_USER_SESSION_KEY, loginUser);
+        boolean rememberMe = Boolean.TRUE.equals(requestParam.getRememberMe());
+        SaLoginParameter loginParameter = new SaLoginParameter();
+        if (rememberMe) {
+            // 7 天免登录靠 active-timeout 做滑动续期，timeout 只负责兜底硬过期。
+            loginParameter.setTimeout(authProperties.getRememberMeTimeoutSeconds())
+                    .setActiveTimeout(authProperties.getRememberMeActiveTimeoutSeconds())
+                    .setIsLastingCookie(true);
+        } else {
+            // 当前会话模式不要求长期留存，只保留短期活跃窗口即可。
+            loginParameter.setTimeout(authProperties.getSessionTimeoutSeconds())
+                    .setActiveTimeout(authProperties.getSessionActiveTimeoutSeconds())
+                    .setIsLastingCookie(false);
+        }
+        StpUtil.login(userDO.getId(), loginParameter);
+        StpUtil.getTokenSession().set(authProperties.getTokenSessionLoginUserKey(), JSONUtil.toJsonStr(loginUser));
 
         return Results.success(new LoginResp()
                 .setUserId(String.valueOf(userDO.getId()))
