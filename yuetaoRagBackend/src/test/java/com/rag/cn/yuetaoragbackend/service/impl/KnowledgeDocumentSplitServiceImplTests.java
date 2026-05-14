@@ -1,6 +1,7 @@
 package com.rag.cn.yuetaoragbackend.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -13,10 +14,14 @@ import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.ParseStatusEnum;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
+import com.rag.cn.yuetaoragbackend.framework.context.ApplicationContextHolder;
 import com.rag.cn.yuetaoragbackend.service.DocumentChunkLogService;
 import com.rag.cn.yuetaoragbackend.service.file.FileService;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -51,6 +56,16 @@ class KnowledgeDocumentSplitServiceImplTests {
 
     @InjectMocks
     private KnowledgeDocumentSplitServiceImpl splitExecutionService;
+
+    @BeforeEach
+    void setUp() {
+        ApplicationContextHolder.clear();
+    }
+
+    @AfterEach
+    void tearDown() {
+        ApplicationContextHolder.clear();
+    }
 
     @Test
     void shouldSplitFixedModeByCharactersAndOverlap() {
@@ -106,6 +121,29 @@ class KnowledgeDocumentSplitServiceImplTests {
         assertThat(docsCaptor.getAllValues())
                 .extracting(List::size)
                 .containsExactly(10, 2);
+    }
+
+    @Test
+    void shouldDeleteInsertedVectorsWhenLaterVectorBatchFails() {
+        String content = "abcdefghijklmnopqrstuvwx";
+        KnowledgeDocumentDO documentDO = document(content, "FIXED", "{\"chunkSize\":2,\"chunkOverlap\":0}");
+        when(knowledgeDocumentMapper.selectOne(any())).thenReturn(documentDO);
+        when(fileService.getObject("kb-doc-01", "doc-key.txt")).thenReturn(content.getBytes(StandardCharsets.UTF_8));
+        AtomicInteger addInvocations = new AtomicInteger();
+        org.mockito.Mockito.doAnswer(invocation -> {
+            if (addInvocations.incrementAndGet() == 2) {
+                throw new RuntimeException("embedding timeout");
+            }
+            return null;
+        }).when(chunkVectorStore).add(any());
+
+        assertThatThrownBy(() -> splitExecutionService.processSplit(200L, 900L))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessageContaining("embedding timeout");
+
+        verify(jdbcTemplate).update(
+                "delete from t_chunk_vector where metadata->>'document_id' = ?",
+                String.valueOf(200L));
     }
 
     @Test

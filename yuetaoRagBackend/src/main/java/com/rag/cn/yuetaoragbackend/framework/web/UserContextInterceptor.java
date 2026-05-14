@@ -16,12 +16,23 @@ import org.springframework.web.servlet.HandlerInterceptor;
 @RequiredArgsConstructor
 public class UserContextInterceptor implements HandlerInterceptor {
 
+    /**
+     * 上游鉴权组件如果已在进入拦截器前显式绑定当前请求的 UserContext，
+     * 可以设置该属性，避免这里把“当前请求的有效上下文”误当成残留脏数据清掉。
+     */
+    public static final String USER_CONTEXT_BOUND_ATTRIBUTE =
+            UserContextInterceptor.class.getName() + ".USER_CONTEXT_BOUND";
+
     private final AuthProperties authProperties;
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
         if (request.getDispatcherType() != DispatcherType.REQUEST) {
             return true;
+        }
+        // 默认清理线程复用残留的登录态；只有上游明确声明“当前请求已绑定用户上下文”时才保留。
+        if (!Boolean.TRUE.equals(request.getAttribute(USER_CONTEXT_BOUND_ATTRIBUTE))) {
+            UserContext.clear();
         }
         String tokenName = SaManager.getConfig().getTokenName();
         if (!StringUtils.hasText(request.getHeader(tokenName))) {

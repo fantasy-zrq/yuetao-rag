@@ -309,6 +309,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 )
               }));
             }
+            if (event.event === "reset") {
+              set((state) => ({
+                thinkingStartAt: null,
+                messages: state.messages.map((message) =>
+                  message.id === assistantId
+                    ? {
+                        ...message,
+                        content: "",
+                        thinking: deepThinking ? "" : undefined,
+                        citations: [],
+                        isThinking: false,
+                        thinkingDurationMs: undefined
+                      }
+                    : message
+                )
+              }));
+            }
             if (event.event === "message_end") {
               set((state) => ({
                 isStreaming: false,

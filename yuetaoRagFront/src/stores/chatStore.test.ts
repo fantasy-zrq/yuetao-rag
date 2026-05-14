@@ -66,4 +66,56 @@ describe("chatStore", () => {
     expect(stopChatStreamMock).toHaveBeenCalledWith({ sessionId: "session-1", traceId: expect.any(String) });
     expect(useChatStore.getState().isStreaming).toBe(false);
   });
+
+  it("ignores a late onDone callback after the user has already stopped streaming", async () => {
+    let capturedHandlers:
+      | {
+          onDone: () => void;
+          onEvent: (event: Record<string, unknown>) => void;
+        }
+      | undefined;
+
+    streamChatMessageMock.mockImplementation(
+      (_payload: unknown, handlers: { onDone: () => void; onEvent: (event: Record<string, unknown>) => void }, options: { signal?: AbortSignal } | undefined) =>
+        new Promise<void>((resolve, reject) => {
+          capturedHandlers = handlers;
+          options?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        })
+    );
+
+    const { useChatStore } = await import("./chatStore");
+    const sendPromise = useChatStore.getState().send("你好");
+    await Promise.resolve();
+
+    capturedHandlers?.onEvent({ event: "thinking_delta", content: "先分析一下" });
+    await useChatStore.getState().stopStreaming();
+    capturedHandlers?.onDone();
+    await sendPromise.catch(() => undefined);
+
+    const assistantMessage = useChatStore.getState().messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.status).toBe("done");
+    expect(assistantMessage?.thinkingDurationMs).toBeGreaterThan(0);
+    expect(useChatStore.getState().currentStreamTraceId).toBeNull();
+  });
+
+  it("resets accumulated assistant output when the backend emits a reset event", async () => {
+    streamChatMessageMock.mockImplementation(async (_payload: unknown, handlers: {
+      onDone: () => void;
+      onEvent: (event: Record<string, unknown>) => void;
+    }) => {
+      handlers.onEvent({ event: "delta", content: "旧模型输出" });
+      handlers.onEvent({ event: "citation", citations: [{ index: 1, referenceLabel: "旧引用" }] });
+      handlers.onEvent({ event: "reset", reason: "candidate-switch" });
+      handlers.onEvent({ event: "delta", content: "新模型输出" });
+      handlers.onEvent({ event: "message_end", sessionId: "session-1", assistantMessageId: "assistant-1" });
+      handlers.onDone();
+    });
+
+    const { useChatStore } = await import("./chatStore");
+    await useChatStore.getState().send("你好");
+
+    const assistantMessage = useChatStore.getState().messages.find((message) => message.role === "assistant");
+    expect(assistantMessage?.content).toBe("新模型输出");
+    expect(assistantMessage?.citations ?? []).toHaveLength(0);
+  });
 });

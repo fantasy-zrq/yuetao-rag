@@ -10,12 +10,14 @@ import static org.mockito.Mockito.when;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.rag.cn.yuetaoragbackend.config.enums.CommonStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.ParseStatusEnum;
+import com.rag.cn.yuetaoragbackend.config.properties.AuthzProperties;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeBaseDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.DocumentDepartmentAuthDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
+import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.KnowledgeDocumentCreateResp;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
@@ -56,6 +58,12 @@ class KnowledgeDocumentServiceImplTests {
 
     @Mock
     private MessageQueueProducer messageQueueProducer;
+
+    @Mock
+    private UserMapper userMapper;
+
+    @Mock
+    private AuthzProperties authzProperties;
 
     @InjectMocks
     private KnowledgeDocumentServiceImpl knowledgeDocumentService;

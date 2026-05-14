@@ -2,8 +2,11 @@ package com.rag.cn.yuetaoragbackend.mq.consumer;
 
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.TypeReference;
+import com.rag.cn.yuetaoragbackend.config.constant.MqIdempotentConstants;
+import com.rag.cn.yuetaoragbackend.framework.idempotent.IdempotentConsume;
 import com.rag.cn.yuetaoragbackend.mq.MessageWrapper;
 import com.rag.cn.yuetaoragbackend.mq.event.KnowledgeDocumentSplitEvent;
+import com.rag.cn.yuetaoragbackend.mq.support.KnowledgeDocumentSplitConsumeKeyHelper;
 import com.rag.cn.yuetaoragbackend.service.impl.KnowledgeDocumentSplitServiceImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,6 +33,11 @@ public class KnowledgeDocumentSplitConsumer implements RocketMQListener<MessageE
     private final KnowledgeDocumentSplitServiceImpl splitExecutionService;
 
     @Override
+    @IdempotentConsume(
+            keyPrefix = MqIdempotentConstants.KNOWLEDGE_DOCUMENT_SPLIT_CONSUME_KEY_PREFIX,
+            key = "T(com.rag.cn.yuetaoragbackend.mq.support.KnowledgeDocumentSplitConsumeKeyHelper).buildKey(#messageExt)",
+            keyTimeout = MqIdempotentConstants.KNOWLEDGE_DOCUMENT_SPLIT_CONSUME_KEY_TIMEOUT_SECONDS
+    )
     public void onMessage(MessageExt messageExt) {
         try {
             MessageWrapper<KnowledgeDocumentSplitEvent> wrapper = JSON.parseObject(

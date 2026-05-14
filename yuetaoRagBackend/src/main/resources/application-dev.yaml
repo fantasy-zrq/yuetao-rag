@@ -155,6 +155,9 @@ app:
     # 未勾选时只保留当前浏览器会话，同时给服务端一个短兜底 TTL。
     session-active-timeout-seconds: 43200
     session-timeout-seconds: 43200
+  database:
+    # 仅在人工确认需要补历史库结构时临时打开，默认禁止应用启动时执行 DDL。
+    intent-node-schema-patch-enabled: false
   trace:
     enabled: true
     log-payload: false

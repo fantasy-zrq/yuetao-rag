@@ -18,14 +18,18 @@ import com.rag.cn.yuetaoragbackend.dao.entity.DocumentDepartmentAuthDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
+import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
+import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
+import com.rag.cn.yuetaoragbackend.framework.web.UserContextInterceptor;
 import com.rag.cn.yuetaoragbackend.mq.producer.MessageQueueProducer;
 import com.rag.cn.yuetaoragbackend.service.file.FileService;
 import com.rag.cn.yuetaoragbackend.service.file.UploadObjectResult;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,7 +55,25 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
         "spring.ai.vectorstore.pgvector.initialize-schema=false"
 })
 @AutoConfigureMockMvc
+@org.springframework.context.annotation.Import(KnowledgeDocumentControllerTests.UserContextTestConfig.class)
 class KnowledgeDocumentControllerTests {
+
+    @org.springframework.boot.test.context.TestConfiguration
+    static class UserContextTestConfig {
+        @org.springframework.context.annotation.Bean
+        org.springframework.boot.web.servlet.FilterRegistrationBean<jakarta.servlet.Filter> userContextTestFilter() {
+            org.springframework.boot.web.servlet.FilterRegistrationBean<jakarta.servlet.Filter> registrationBean =
+                    new org.springframework.boot.web.servlet.FilterRegistrationBean<>();
+            registrationBean.setFilter((request, response, chain) -> {
+                if (UserContext.hasUser()) {
+                    request.setAttribute(UserContextInterceptor.USER_CONTEXT_BOUND_ATTRIBUTE, Boolean.TRUE);
+                }
+                chain.doFilter(request, response);
+            });
+            registrationBean.setOrder(-100);
+            return registrationBean;
+        }
+    }
 
     @Autowired
     private MockMvc mockMvc;
@@ -66,6 +88,9 @@ class KnowledgeDocumentControllerTests {
     private KnowledgeDocumentMapper knowledgeDocumentMapper;
 
     @Autowired
+    private UserMapper userMapper;
+
+    @Autowired
     private DocumentDepartmentAuthMapper documentDepartmentAuthMapper;
 
     @MockBean
@@ -76,6 +101,7 @@ class KnowledgeDocumentControllerTests {
 
     private final List<Long> knowledgeBaseIds = new ArrayList<>();
     private final List<Long> knowledgeDocumentIds = new ArrayList<>();
+    private final List<Long> userIds = new ArrayList<>();
 
     @AfterEach
     void tearDown() {
@@ -84,8 +110,10 @@ class KnowledgeDocumentControllerTests {
                 .eq(DocumentDepartmentAuthDO::getDocumentId, each)));
         knowledgeDocumentIds.forEach(knowledgeDocumentMapper::deleteById);
         knowledgeBaseIds.forEach(knowledgeBaseMapper::deleteById);
+        userIds.forEach(userMapper::deleteById);
         knowledgeDocumentIds.clear();
         knowledgeBaseIds.clear();
+        userIds.clear();
     }
 
     @Test
@@ -304,6 +332,27 @@ class KnowledgeDocumentControllerTests {
         verify(fileService).deleteObject("doc-update-bucket", "manual.pdf");
     }
 
+    @Test
+    void shouldRejectSensitiveDocumentDetailWhenDepartmentNotAuthorized() throws Exception {
+        UserDO user = persistUser("USER", 99L, 10);
+        UserContext.set(LoginUser.builder().userId(String.valueOf(user.getId())).build());
+        KnowledgeBaseDO knowledgeBaseDO = persistKnowledgeBase("doc-detail-kb", "doc-detail-bucket");
+        KnowledgeDocumentDO knowledgeDocumentDO = persistKnowledgeDocument(knowledgeBaseDO.getId(), ParseStatusEnum.SUCCESS.getCode());
+        knowledgeDocumentDO.setVisibilityScope("SENSITIVE");
+        knowledgeDocumentDO.setMinRankLevel(10);
+        knowledgeDocumentMapper.updateById(knowledgeDocumentDO);
+        documentDepartmentAuthMapper.insert(new DocumentDepartmentAuthDO()
+                .setDocumentId(knowledgeDocumentDO.getId())
+                .setDepartmentId(88L));
+
+        MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.get("/knowledge-documents/detail/" + knowledgeDocumentDO.getId()))
+                .andReturn();
+
+        JsonNode responseJson = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(responseJson.path("code").asText()).isEqualTo("A000001");
+        assertThat(responseJson.path("message").asText()).contains("无权访问该文档");
+    }
+
     private KnowledgeBaseDO persistKnowledgeBase(String name, String collectionName) {
         KnowledgeBaseDO knowledgeBaseDO = new KnowledgeBaseDO()
                 .setName(name)
@@ -340,6 +389,19 @@ class KnowledgeDocumentControllerTests {
         knowledgeDocumentMapper.insert(knowledgeDocumentDO);
         knowledgeDocumentIds.add(knowledgeDocumentDO.getId());
         return knowledgeDocumentDO;
+    }
+
+    private UserDO persistUser(String roleCode, Long departmentId, Integer rankLevel) {
+        UserDO userDO = new UserDO()
+                .setUsername("doc-user-" + UUID.randomUUID())
+                .setDisplayName("doc-user")
+                .setRoleCode(roleCode)
+                .setDepartmentId(departmentId)
+                .setRankLevel(rankLevel)
+                .setStatus("ENABLED");
+        userMapper.insert(userDO);
+        userIds.add(userDO.getId());
+        return userDO;
     }
 
     private List<Long> listDocumentDepartmentIds(Long documentId) {

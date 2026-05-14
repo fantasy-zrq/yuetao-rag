@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import com.rag.cn.yuetaoragbackend.framework.database.MyMetaObjectHandler;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -37,6 +38,7 @@ public class DataBaseConfiguration {
     }
 
     @Bean
+    @ConditionalOnProperty(prefix = "app.database", name = "intent-node-schema-patch-enabled", havingValue = "true")
     public ApplicationRunner intentNodeSchemaPatchRunner(JdbcTemplate jdbcTemplate) {
         return args -> jdbcTemplate.execute("""
                 ALTER TABLE public.t_intent_node

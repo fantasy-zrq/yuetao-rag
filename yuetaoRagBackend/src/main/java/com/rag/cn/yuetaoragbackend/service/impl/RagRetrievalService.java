@@ -1,12 +1,17 @@
 package com.rag.cn.yuetaoragbackend.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.rag.cn.yuetaoragbackend.config.OpenAiCompatibleRerankModel;
+import com.rag.cn.yuetaoragbackend.config.enums.CommonStatusEnum;
+import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.AuthzProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.RagRetrievalProperties;
 import com.rag.cn.yuetaoragbackend.config.record.RerankResultRecord;
+import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeBaseDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkVectorMapper;
+import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,6 +35,7 @@ public class RagRetrievalService {
 
     private final ChunkVectorMapper chunkVectorMapper;
     private final EmbeddingModel embeddingModel;
+    private final KnowledgeBaseMapper knowledgeBaseMapper;
     private final RagRetrievalProperties retrievalProperties;
     private final AiProperties aiProperties;
     private final AuthzProperties authzProperties;
@@ -40,7 +46,22 @@ public class RagRetrievalService {
     }
 
     public List<RetrievedChunk> retrieveByCollection(UserDO user, String query, String collectionName) {
-        return retrieve(user, query);
+        if (!StringUtils.hasText(collectionName)) {
+            return retrieve(user, query);
+        }
+        List<Long> knowledgeBaseIds = knowledgeBaseMapper.selectList(new QueryWrapper<KnowledgeBaseDO>()
+                        .select("id")
+                        .eq("collection_name", collectionName)
+                        .eq("status", CommonStatusEnum.ENABLED.getCode())
+                        .eq("delete_flag", DeleteFlagEnum.NORMAL.getCode()))
+                .stream()
+                .map(KnowledgeBaseDO::getId)
+                .toList();
+        if (knowledgeBaseIds.isEmpty()) {
+            log.info("[RETRIEVE] collection 未命中有效知识库: collectionName={}", collectionName);
+            return List.of();
+        }
+        return retrieveInternal(user, query, knowledgeBaseIds);
     }
 
     public List<RetrievedChunk> retrieveByKnowledgeBaseIds(UserDO user, String query, List<Long> knowledgeBaseIds) {

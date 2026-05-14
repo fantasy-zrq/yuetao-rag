@@ -28,6 +28,7 @@ import com.rag.cn.yuetaoragbackend.dto.req.ChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateChatMessageReq;
 import com.rag.cn.yuetaoragbackend.dto.req.StopChatStreamReq;
 import com.rag.cn.yuetaoragbackend.dto.resp.*;
+import com.rag.cn.yuetaoragbackend.framework.context.ApplicationContextHolder;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.framework.errorcode.BaseErrorCode;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
@@ -87,7 +88,6 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     private final Map<String, ChatActiveStream> activeStreams = new ConcurrentHashMap<>();
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public ChatResp chat(ChatReq requestParam) {
         if (requestParam == null || requestParam.getSessionId() == null || !StringUtils.hasText(requestParam.getMessage())) {
             throw new ClientException("会话ID和消息内容不能为空");
@@ -115,6 +115,31 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
         int assistantSequenceNo = reserveAssistantSequenceNo(requestParam.getSessionId());
         ChatModelInfoRecord modelInfo = chatModelGateway.currentModelInfo();
+        ChatResp response = currentChatService().persistSyncChatResult(
+                requestParam,
+                userId,
+                traceId,
+                routeDecision,
+                rewrittenQuery,
+                answerResult,
+                assistantSequenceNo,
+                modelInfo);
+
+        log.info("[CHAT] 对话完成: sessionId={}, knowledgeHit={}, citationCount={}, elapsed={}ms",
+                requestParam.getSessionId(), answerResult.knowledgeHit(), answerResult.citations().size(), elapsedMillis(chatStart));
+
+        return response;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public ChatResp persistSyncChatResult(ChatReq requestParam,
+                                          Long userId,
+                                          String traceId,
+                                          ChatRouteDecisionRecord routeDecision,
+                                          String rewrittenQuery,
+                                          ChatAnswerResultRecord answerResult,
+                                          int assistantSequenceNo,
+                                          ChatModelInfoRecord modelInfo) {
         ChatMessageDO userMessage = new ChatMessageDO()
                 .setSessionId(requestParam.getSessionId())
                 .setUserId(userId)
@@ -137,15 +162,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 .setModelName(modelInfo.modelName());
         chatMessageMapper.insert(assistantMessage);
 
-        ChatSessionDO updateSession = new ChatSessionDO();
-        updateSession.setId(requestParam.getSessionId());
-        updateSession.setLastActiveAt(new Date());
-        chatSessionMapper.updateById(updateSession);
-
+        updateSessionLastActiveAt(requestParam.getSessionId());
         chatSessionSummaryService.maybeSummarize(requestParam.getSessionId(), assistantSequenceNo);
-
-        log.info("[CHAT] 对话完成: sessionId={}, knowledgeHit={}, citationCount={}, elapsed={}ms",
-                requestParam.getSessionId(), answerResult.knowledgeHit(), answerResult.citations().size(), elapsedMillis(chatStart));
 
         return new ChatResp()
                 .setSessionId(requestParam.getSessionId())
@@ -379,6 +397,8 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
 
     @Override
     public List<ChatMessageListResp> listBySessionId(Long sessionId) {
+        Long userId = currentUserId();
+        requireSessionForCreate(sessionId, userId);
         return chatMessageMapper.selectList(Wrappers.<ChatMessageDO>lambdaQuery()
                         .eq(ChatMessageDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode())
                         .eq(ChatMessageDO::getSessionId, sessionId)
@@ -451,6 +471,12 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         } catch (NumberFormatException ex) {
             throw new ClientException("当前登录用户ID非法");
         }
+    }
+
+    private ChatMessageServiceImpl currentChatService() {
+        return ApplicationContextHolder.getInstance() == null
+                ? this
+                : ApplicationContextHolder.getBean(ChatMessageServiceImpl.class);
     }
 
     private Long safeCurrentUserId() {

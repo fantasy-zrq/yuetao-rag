@@ -116,11 +116,12 @@ export async function streamChatMessage(
       const events = buffer.split("\n\n");
       buffer = events.pop() || "";
       for (const raw of events) {
-        const dataLine = raw
+        const dataLines = raw
           .split("\n")
-          .find((line) => line.startsWith("data:"));
-        if (!dataLine) continue;
-        const data = dataLine.replace(/^data:\s*/, "");
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.replace(/^data:\s*/, ""));
+        if (dataLines.length === 0) continue;
+        const data = dataLines.join("\n");
         if (!data || data === "[DONE]") continue;
         handlers.onEvent(normalizeStreamEvent(parseJsonWithLargeIntegerIds<ChatStreamEvent>(data)));
       }

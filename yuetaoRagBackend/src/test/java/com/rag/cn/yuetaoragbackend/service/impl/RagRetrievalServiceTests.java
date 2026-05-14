@@ -15,8 +15,10 @@ import com.rag.cn.yuetaoragbackend.config.OpenAiCompatibleRerankModel;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.AuthzProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.RagRetrievalProperties;
+import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeBaseDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkVectorMapper;
+import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -40,6 +42,9 @@ class RagRetrievalServiceTests {
     private EmbeddingModel embeddingModel;
 
     @Mock
+    private KnowledgeBaseMapper knowledgeBaseMapper;
+
+    @Mock
     private OpenAiCompatibleRerankModel rerankModel;
 
     @Test
@@ -53,6 +58,7 @@ class RagRetrievalServiceTests {
         RagRetrievalService retrievalService = new RagRetrievalService(
                 chunkVectorMapper,
                 embeddingModel,
+                knowledgeBaseMapper,
                 retrievalProperties,
                 aiProperties,
                 authzProperties,
@@ -97,6 +103,7 @@ class RagRetrievalServiceTests {
         RagRetrievalService retrievalService = new RagRetrievalService(
                 chunkVectorMapper,
                 embeddingModel,
+                knowledgeBaseMapper,
                 retrievalProperties,
                 aiProperties,
                 authzProperties,
@@ -130,6 +137,7 @@ class RagRetrievalServiceTests {
         RagRetrievalService retrievalService = new RagRetrievalService(
                 chunkVectorMapper,
                 embeddingModel,
+                knowledgeBaseMapper,
                 retrievalProperties,
                 aiProperties,
                 authzProperties,
@@ -152,5 +160,45 @@ class RagRetrievalServiceTests {
                 hasKbCaptor.capture(), kbIdsCaptor.capture(), anyInt());
         assertThat(hasKbCaptor.getValue()).isTrue();
         assertThat(kbIdsCaptor.getValue()).containsExactly(101L, 102L);
+    }
+
+    @Test
+    void shouldResolveKnowledgeBaseIdsWhenRetrievingByCollection() {
+        RagRetrievalProperties retrievalProperties = new RagRetrievalProperties();
+        retrievalProperties.setTopK(4);
+        retrievalProperties.setCandidateMultiplier(2);
+        AiProperties aiProperties = new AiProperties();
+        AuthzProperties authzProperties = new AuthzProperties();
+        authzProperties.setAdminRoleCodes(List.of("ADMIN"));
+        RagRetrievalService retrievalService = new RagRetrievalService(
+                chunkVectorMapper,
+                embeddingModel,
+                knowledgeBaseMapper,
+                retrievalProperties,
+                aiProperties,
+                authzProperties,
+                rerankModel);
+        UserDO userDO = new UserDO()
+                .setRoleCode("USER")
+                .setDepartmentId(12L)
+                .setRankLevel(10);
+        when(embeddingModel.embed("报销制度")).thenReturn(new float[]{0.1F, 0.2F});
+        KnowledgeBaseDO knowledgeBaseDO = new KnowledgeBaseDO();
+        knowledgeBaseDO.setId(201L);
+        knowledgeBaseDO.setCollectionName("finance-docs");
+        when(knowledgeBaseMapper.selectList(any())).thenReturn(List.of(knowledgeBaseDO));
+        when(chunkVectorMapper.selectByVectorSearch(
+                anyString(), anyBoolean(), anyInt(), anyLong(), anyBoolean(), anyList(), anyInt()))
+                .thenReturn(List.of());
+
+        retrievalService.retrieveByCollection(userDO, "报销制度", "finance-docs");
+
+        ArgumentCaptor<Boolean> hasKbCaptor = ArgumentCaptor.forClass(Boolean.class);
+        ArgumentCaptor<List<Long>> kbIdsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(chunkVectorMapper).selectByVectorSearch(
+                anyString(), anyBoolean(), anyInt(), anyLong(),
+                hasKbCaptor.capture(), kbIdsCaptor.capture(), anyInt());
+        assertThat(hasKbCaptor.getValue()).isTrue();
+        assertThat(kbIdsCaptor.getValue()).containsExactly(201L);
     }
 }

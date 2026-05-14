@@ -9,6 +9,7 @@ import com.rag.cn.yuetaoragbackend.dao.entity.ChunkDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
+import com.rag.cn.yuetaoragbackend.framework.context.ApplicationContextHolder;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import com.rag.cn.yuetaoragbackend.service.DocumentChunkLogService;
 import com.rag.cn.yuetaoragbackend.service.file.FileService;
@@ -117,7 +118,16 @@ public class KnowledgeDocumentSplitServiceImpl {
 
         batchInsertChunks(chunkEntities);
         long vectorStartNanos = System.nanoTime();
-        batchAddVectorDocuments(vectorDocuments);
+        try {
+            batchAddVectorDocuments(vectorDocuments);
+        } catch (RuntimeException ex) {
+            try {
+                currentSplitService().cleanupInsertedVectors(documentId);
+            } catch (RuntimeException cleanupEx) {
+                log.warn("向量化失败后清理孤儿向量失败: documentId={}, chunkLogId={}", documentId, chunkLogId, cleanupEx);
+            }
+            throw ex;
+        }
         long vectorCostMillis = elapsedMillis(vectorStartNanos);
         try {
             documentChunkLogService.recordVectorResult(chunkLogId, vectorCostMillis);
@@ -171,6 +181,13 @@ public class KnowledgeDocumentSplitServiceImpl {
         } catch (Exception ex) {
             log.warn("文档分块日志更新失败: action=标记分块超时, documentId={}, chunkLogId={}", documentId, null, ex);
         }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
+    public void cleanupInsertedVectors(Long documentId) {
+        jdbcTemplate.update(
+                "delete from t_chunk_vector where metadata->>'document_id' = ?",
+                String.valueOf(documentId));
     }
 
     private void clearDocumentFailReason(Long documentId) {
@@ -327,6 +344,12 @@ public class KnowledgeDocumentSplitServiceImpl {
             int end = Math.min(start + VECTOR_BATCH_SIZE, vectorDocuments.size());
             chunkVectorStore.add(vectorDocuments.subList(start, end));
         }
+    }
+
+    private KnowledgeDocumentSplitServiceImpl currentSplitService() {
+        return ApplicationContextHolder.getInstance() == null
+                ? this
+                : ApplicationContextHolder.getBean(KnowledgeDocumentSplitServiceImpl.class);
     }
 
     private String sanitizeSplitErrorMessage(String errorMessage) {

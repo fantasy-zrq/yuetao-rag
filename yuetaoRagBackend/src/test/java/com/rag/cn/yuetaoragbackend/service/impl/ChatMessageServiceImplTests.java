@@ -24,6 +24,7 @@ import com.rag.cn.yuetaoragbackend.config.enums.IntentNodeKindEnum;
 import com.rag.cn.yuetaoragbackend.config.properties.AiProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
+import com.rag.cn.yuetaoragbackend.framework.context.ApplicationContextHolder;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
@@ -54,6 +55,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.mockito.ArgumentCaptor;
 import java.util.concurrent.ExecutorService;
+import java.lang.reflect.Method;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -63,6 +65,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.redisson.api.RAtomicLong;
 import org.redisson.api.RedissonClient;
+import org.springframework.core.annotation.AnnotatedElementUtils;
+import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
 import reactor.core.scheduler.Scheduler;
@@ -122,6 +126,7 @@ class ChatMessageServiceImplTests {
 
     @BeforeEach
     void setUp() {
+        ApplicationContextHolder.clear();
         memoryProperties = new MemoryProperties();
         memoryProperties.setRecentWindowSize(12);
         traceProperties = new TraceProperties();
@@ -162,6 +167,7 @@ class ChatMessageServiceImplTests {
     @AfterEach
     void tearDown() {
         UserContext.clear();
+        ApplicationContextHolder.clear();
     }
 
     @Test
@@ -232,6 +238,13 @@ class ChatMessageServiceImplTests {
                 .extracting(ChatMessageDO::getSequenceNo)
                 .containsExactly(9, 10);
         assertThat(redisSequenceState.get()).isEqualTo(10L);
+    }
+
+    @Test
+    void shouldNotWrapWholeChatMethodInTransactionalAnnotation() throws NoSuchMethodException {
+        Method chatMethod = ChatMessageServiceImpl.class.getMethod("chat", ChatReq.class);
+
+        assertThat(AnnotatedElementUtils.hasAnnotation(chatMethod, Transactional.class)).isFalse();
     }
 
     @Test

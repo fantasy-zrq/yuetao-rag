@@ -13,9 +13,11 @@ import com.rag.cn.yuetaoragbackend.config.enums.DeleteFlagEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DocumentChunkLogOperationTypeEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.DocumentChunkLogStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.ParseStatusEnum;
+import com.rag.cn.yuetaoragbackend.config.properties.AuthzProperties;
 import com.rag.cn.yuetaoragbackend.dao.entity.DocumentDepartmentAuthDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.DocumentChunkLogDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
+import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkVectorMapper;
@@ -23,6 +25,7 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentChunkLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
+import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
 import com.rag.cn.yuetaoragbackend.dto.req.DeleteKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.SplitKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.UpdateKnowledgeDocumentReq;
@@ -38,6 +41,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -74,6 +78,12 @@ class KnowledgeDocumentMutationServiceImplTests {
 
     @Mock
     private MessageQueueProducer messageQueueProducer;
+
+    @Mock
+    private UserMapper userMapper;
+
+    @Mock
+    private AuthzProperties authzProperties;
 
     @InjectMocks
     private KnowledgeDocumentServiceImpl knowledgeDocumentService;
@@ -152,6 +162,31 @@ class KnowledgeDocumentMutationServiceImplTests {
         KnowledgeDocumentSplitEvent event = (KnowledgeDocumentSplitEvent) eventCaptor.getValue();
         assertThat(event.getDocumentId()).isEqualTo(200L);
         assertThat(event.getChunkLogId()).isEqualTo(insertedLog.getId());
+    }
+
+    @Test
+    void shouldPersistRebuildMetadataBeforeCleaningArtifacts() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
+        KnowledgeDocumentDO existing = existingDocument(ParseStatusEnum.SUCCESS.getCode());
+        UpdateKnowledgeDocumentReq request = new UpdateKnowledgeDocumentReq()
+                .setId(200L)
+                .setTitle("manual.pdf")
+                .setChunkMode("STRUCTURE_AWARE")
+                .setChunkConfig("{\"chunkSize\":800,\"chunkOverlap\":80}")
+                .setVisibilityScope("INTERNAL")
+                .setMinRankLevel(10);
+        when(knowledgeDocumentMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+        when(chunkMapper.selectList(any(Wrapper.class))).thenReturn(java.util.List.of());
+        doAnswer(invocation -> {
+            ((java.util.function.Consumer<Object>) invocation.getArgument(4)).accept(null);
+            return null;
+        }).when(messageQueueProducer).sendInTransaction(any(), any(), any(), any(), any());
+
+        knowledgeDocumentService.updateKnowledgeDocument(request);
+
+        InOrder inOrder = org.mockito.Mockito.inOrder(knowledgeDocumentMapper, chunkVectorMapper);
+        inOrder.verify(knowledgeDocumentMapper).updateById(any(KnowledgeDocumentDO.class));
+        inOrder.verify(chunkVectorMapper).delete(any(Wrapper.class));
     }
 
     @Test
@@ -319,9 +354,11 @@ class KnowledgeDocumentMutationServiceImplTests {
 
     @Test
     void shouldReturnEmptyDepartmentAuthForInternalDocumentDetail() {
+        UserContext.set(LoginUser.builder().userId("10001").build());
         KnowledgeDocumentDO existing = existingDocument(ParseStatusEnum.SUCCESS.getCode());
         existing.setVisibilityScope("INTERNAL");
         when(knowledgeDocumentMapper.selectOne(any(Wrapper.class))).thenReturn(existing);
+        when(userMapper.selectOne(any(Wrapper.class))).thenReturn(currentUser());
 
         KnowledgeDocumentDetailResp response = knowledgeDocumentService.getKnowledgeDocument(200L);
 
@@ -383,5 +420,16 @@ class KnowledgeDocumentMutationServiceImplTests {
         documentDO.setMinRankLevel(10);
         documentDO.setDeleteFlag(DeleteFlagEnum.NORMAL.getCode());
         return documentDO;
+    }
+
+    private UserDO currentUser() {
+        UserDO userDO = new UserDO()
+                .setRoleCode("USER")
+                .setDepartmentId(11L)
+                .setRankLevel(10)
+                .setStatus("ENABLED");
+        userDO.setId(10001L);
+        userDO.setDeleteFlag(DeleteFlagEnum.NORMAL.getCode());
+        return userDO;
     }
 }

@@ -65,4 +65,12 @@ public class ApplicationContextHolder implements ApplicationContextAware {
     public static ApplicationContext getInstance() {
         return CONTEXT;
     }
+
+    /**
+     * 清理静态 ApplicationContext 引用。
+     * 仅用于测试隔离，避免跨测试类残留的 Spring 上下文污染纯单元测试。
+     */
+    public static void clear() {
+        CONTEXT = null;
+    }
 }

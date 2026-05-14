@@ -10,6 +10,7 @@ import com.rag.cn.yuetaoragbackend.config.enums.DocumentChunkLogOperationTypeEnu
 import com.rag.cn.yuetaoragbackend.config.enums.DocumentChunkLogStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.ParseStatusEnum;
 import com.rag.cn.yuetaoragbackend.config.enums.VisibilityScopeEnum;
+import com.rag.cn.yuetaoragbackend.config.properties.AuthzProperties;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChunkDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeBaseDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.KnowledgeDocumentDO;
@@ -17,6 +18,7 @@ import com.rag.cn.yuetaoragbackend.dao.entity.ChunkDepartmentAuthDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChunkVectorDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.DocumentChunkLogDO;
 import com.rag.cn.yuetaoragbackend.dao.entity.DocumentDepartmentAuthDO;
+import com.rag.cn.yuetaoragbackend.dao.entity.UserDO;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.ChunkVectorMapper;
@@ -25,6 +27,7 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.DocumentDepartmentAuthMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.projection.DocumentChunkCountProjection;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeBaseMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.KnowledgeDocumentMapper;
+import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
 import com.rag.cn.yuetaoragbackend.dto.req.CreateKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.DeleteKnowledgeDocumentReq;
 import com.rag.cn.yuetaoragbackend.dto.req.SplitKnowledgeDocumentReq;
@@ -75,6 +78,8 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
     private final DocumentDepartmentAuthMapper documentDepartmentAuthMapper;
     private final ChunkDepartmentAuthMapper chunkDepartmentAuthMapper;
     private final DocumentChunkLogMapper documentChunkLogMapper;
+    private final UserMapper userMapper;
+    private final AuthzProperties authzProperties;
     private final FileService fileService;
     private final MessageQueueProducer messageQueueProducer;
 
@@ -259,6 +264,27 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
         if (documentDO == null) {
             return null;
         }
+        UserDO currentUser = requireUser(currentUserId());
+        // 文档详情接口必须复用检索链路的基础 RBAC 规则，避免绕过向量检索直接看敏感文档元数据。
+        if (!isAdmin(currentUser)) {
+            int userRankLevel = currentUser.getRankLevel() == null ? 0 : currentUser.getRankLevel();
+            int documentMinRankLevel = documentDO.getMinRankLevel() == null ? 0 : documentDO.getMinRankLevel();
+            if (userRankLevel < documentMinRankLevel) {
+                throw new ClientException("无权访问该文档");
+            }
+            if (VisibilityScopeEnum.SENSITIVE.getCode().equals(documentDO.getVisibilityScope())) {
+                if (currentUser.getDepartmentId() == null) {
+                    throw new ClientException("无权访问该文档");
+                }
+                Long authCount = documentDepartmentAuthMapper.selectCount(Wrappers.<DocumentDepartmentAuthDO>lambdaQuery()
+                        .eq(DocumentDepartmentAuthDO::getDocumentId, documentDO.getId())
+                        .eq(DocumentDepartmentAuthDO::getDepartmentId, currentUser.getDepartmentId())
+                        .eq(DocumentDepartmentAuthDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
+                if (authCount == null || authCount <= 0) {
+                    throw new ClientException("无权访问该文档");
+                }
+            }
+        }
         return toDetailResp(documentDO);
     }
 
@@ -395,6 +421,25 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
         }
     }
 
+    private UserDO requireUser(Long userId) {
+        UserDO userDO = userMapper.selectOne(Wrappers.<UserDO>lambdaQuery()
+                .eq(UserDO::getId, userId)
+                .eq(UserDO::getDeleteFlag, DeleteFlagEnum.NORMAL.getCode()));
+        if (userDO == null) {
+            throw new ClientException("用户不存在");
+        }
+        return userDO;
+    }
+
+    private boolean isAdmin(UserDO userDO) {
+        if (userDO == null || !StringUtils.hasText(userDO.getRoleCode())) {
+            return false;
+        }
+        return authzProperties.getAdminRoleCodes().stream()
+                .filter(StringUtils::hasText)
+                .anyMatch(each -> each.equalsIgnoreCase(userDO.getRoleCode()));
+    }
+
     private KnowledgeDocumentDO getNormalDocumentOrThrow(Long id) {
         KnowledgeDocumentDO documentDO = knowledgeDocumentMapper.selectOne(Wrappers.<KnowledgeDocumentDO>lambdaQuery()
                 .eq(KnowledgeDocumentDO::getId, id)
@@ -473,7 +518,6 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
                 "文档重建切片",
                 new KnowledgeDocumentSplitEvent(documentDO.getId(), chunkLogId),
                 ignored -> {
-                    cleanupGeneratedArtifacts(documentDO.getId());
                     KnowledgeDocumentDO updateDO = new KnowledgeDocumentDO();
                     updateDO.setId(documentDO.getId());
                     updateCustomizer.accept(updateDO);
@@ -489,6 +533,8 @@ public class KnowledgeDocumentServiceImpl extends ServiceImpl<KnowledgeDocumentM
                     updateDO.setUpdatedBy(currentUserId);
                     knowledgeDocumentMapper.updateById(updateDO);
                     clearDocumentFailReason(documentDO.getId());
+                    // 先落文档重建元数据，再清理旧切片，避免本地事务中途失败时难以定位重建状态。
+                    cleanupGeneratedArtifacts(documentDO.getId());
                 });
     }
 

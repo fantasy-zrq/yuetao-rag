@@ -20,6 +20,7 @@ import com.rag.cn.yuetaoragbackend.config.properties.MemoryProperties;
 import com.rag.cn.yuetaoragbackend.config.properties.TraceProperties;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
 import com.rag.cn.yuetaoragbackend.config.record.StreamContentRecord;
+import com.rag.cn.yuetaoragbackend.framework.context.ApplicationContextHolder;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
 import com.rag.cn.yuetaoragbackend.dao.entity.ChatMessageDO;
@@ -85,6 +86,7 @@ class StreamCircuitBreakerTests {
 
     @BeforeEach
     void setUp() {
+        ApplicationContextHolder.clear();
         memoryProperties = new MemoryProperties();
         memoryProperties.setRecentWindowSize(12);
         traceProperties = new TraceProperties();
@@ -115,6 +117,7 @@ class StreamCircuitBreakerTests {
     @AfterEach
     void tearDown() {
         UserContext.clear();
+        ApplicationContextHolder.clear();
     }
 
     // ========== 普通流式熔断场景 ==========

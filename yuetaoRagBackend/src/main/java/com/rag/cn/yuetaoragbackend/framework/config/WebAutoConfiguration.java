@@ -1,6 +1,7 @@
 package com.rag.cn.yuetaoragbackend.framework.config;
 
 
+import com.alibaba.ttl.threadpool.TtlExecutors;
 import com.rag.cn.yuetaoragbackend.config.properties.AuthProperties;
 import com.rag.cn.yuetaoragbackend.framework.web.GlobalExceptionHandler;
 import com.rag.cn.yuetaoragbackend.framework.web.UserContextInterceptor;
@@ -21,6 +22,11 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 @RequiredArgsConstructor
 public class WebAutoConfiguration implements WebMvcConfigurer {
 
+    private static final int CHAT_STREAM_CORE_POOL_SIZE = 4;
+    private static final int CHAT_STREAM_MAX_POOL_SIZE = 32;
+    private static final long CHAT_STREAM_KEEP_ALIVE_SECONDS = 60L;
+    private static final int CHAT_STREAM_QUEUE_CAPACITY = 128;
+
     private final AuthProperties authProperties;
 
     /**
@@ -33,13 +39,14 @@ public class WebAutoConfiguration implements WebMvcConfigurer {
 
     @Bean(destroyMethod = "shutdown")
     public ExecutorService chatStreamExecutor() {
-        return new ThreadPoolExecutor(
-                4,
-                32,
-                60L,
+        // 流式对话在独立线程池中执行，必须在任务提交时捕获请求线程的 UserContext。
+        return TtlExecutors.getTtlExecutorService(new ThreadPoolExecutor(
+                CHAT_STREAM_CORE_POOL_SIZE,
+                CHAT_STREAM_MAX_POOL_SIZE,
+                CHAT_STREAM_KEEP_ALIVE_SECONDS,
                 TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>(128),
-                new ThreadPoolExecutor.CallerRunsPolicy());
+                new LinkedBlockingQueue<>(CHAT_STREAM_QUEUE_CAPACITY),
+                new ThreadPoolExecutor.CallerRunsPolicy()));
     }
 
     @Override

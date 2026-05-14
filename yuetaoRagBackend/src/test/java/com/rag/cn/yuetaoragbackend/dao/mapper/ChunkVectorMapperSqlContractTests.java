@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.RecordComponent;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -31,5 +32,16 @@ class ChunkVectorMapperSqlContractTests {
                 .toList();
 
         assertThat(aliases).containsExactlyElementsOf(expectedAliases);
+    }
+
+    @Test
+    void shouldCheckChunkLevelDepartmentAuthForSensitiveDocuments() throws IOException {
+        String xml = new String(
+                new ClassPathResource("mapper/ChunkVectorMapper.xml").getInputStream().readAllBytes(),
+                StandardCharsets.UTF_8);
+
+        assertThat(xml)
+                .as("sensitive document retrieval should enforce chunk-level department auth")
+                .contains("t_chunk_department_auth");
     }
 }

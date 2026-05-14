@@ -21,6 +21,7 @@ import com.rag.cn.yuetaoragbackend.dao.mapper.QaTraceLogMapper;
 import com.rag.cn.yuetaoragbackend.dao.mapper.UserMapper;
 import com.rag.cn.yuetaoragbackend.framework.context.LoginUser;
 import com.rag.cn.yuetaoragbackend.framework.context.UserContext;
+import com.rag.cn.yuetaoragbackend.framework.web.UserContextInterceptor;
 import com.rag.cn.yuetaoragbackend.dao.projection.RetrievedChunk;
 import com.rag.cn.yuetaoragbackend.service.impl.ChatModelGateway;
 import com.rag.cn.yuetaoragbackend.service.impl.RagRetrievalService;
@@ -92,6 +93,7 @@ class ChatMessageControllerTests {
             registrationBean.setFilter((request, response, chain) -> {
                 if (currentTestUserId != null) {
                     UserContext.set(LoginUser.builder().userId(String.valueOf(currentTestUserId)).build());
+                    request.setAttribute(UserContextInterceptor.USER_CONTEXT_BOUND_ATTRIBUTE, Boolean.TRUE);
                 }
                 try {
                     chain.doFilter(request, response);
@@ -311,6 +313,31 @@ class ChatMessageControllerTests {
                                   "message": "你好"
                                 }
                                 """.formatted(session.getId())))
+                .andReturn();
+
+        JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
+        assertThat(json.path("code").asText()).isEqualTo("A000001");
+        assertThat(json.path("message").asText()).contains("无权访问该会话");
+    }
+
+    @Test
+    void shouldRejectListingMessagesWhenSessionBelongsToAnotherUser() throws Exception {
+        UserDO owner = persistUser("USER");
+        UserDO other = persistUser("USER");
+        ChatSessionDO session = persistSession(owner.getId(), ChatSessionStatusEnum.ACTIVE.getCode());
+        currentTestUserId = owner.getId();
+        chatMessageMapper.insert(new ChatMessageDO()
+                .setSessionId(session.getId())
+                .setUserId(owner.getId())
+                .setRole("USER")
+                .setContent("owner-message")
+                .setContentType("TEXT")
+                .setSequenceNo(1)
+                .setTraceId("trace-owner-list"));
+
+        currentTestUserId = other.getId();
+        MvcResult mvcResult = mockMvc.perform(MockMvcRequestBuilders.get("/chat-messages/list")
+                        .param("sessionId", session.getId().toString()))
                 .andReturn();
 
         JsonNode json = objectMapper.readTree(mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8));
