@@ -15,6 +15,8 @@ import static org.mockito.Mockito.when;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.rag.cn.yuetaoragbackend.config.record.ChatModelInfoRecord;
 import com.rag.cn.yuetaoragbackend.config.record.StreamContentRecord;
@@ -47,6 +49,7 @@ import com.rag.cn.yuetaoragbackend.dto.resp.ChatStreamEventResp;
 import com.rag.cn.yuetaoragbackend.dto.resp.IntentNodeTreeResp;
 import com.rag.cn.yuetaoragbackend.framework.exception.ClientException;
 import java.util.List;
+import java.util.Map;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -121,6 +124,8 @@ class ChatMessageServiceImplTests {
 
     private AiProperties aiProperties;
 
+    private ObjectMapper objectMapper;
+
     @InjectMocks
     private ChatMessageServiceImpl chatMessageService;
 
@@ -135,6 +140,7 @@ class ChatMessageServiceImplTests {
         aiProperties = new AiProperties();
         aiProperties.getCircuitBreaker().setFirstTokenTimeoutMillis(2000);
         aiProperties.getCircuitBreaker().setStreamChunkIdleTimeoutMillis(2000);
+        objectMapper = new ObjectMapper();
         redisSequenceState.set(0L);
         lenient().when(chatMessageMapper.selectPage(any(), any()))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -155,6 +161,7 @@ class ChatMessageServiceImplTests {
                 memoryProperties,
                 traceProperties,
                 aiProperties,
+                objectMapper,
                 redissonClient,
                 chatStreamExecutor,
                 chatSessionSummaryService,
@@ -525,7 +532,7 @@ class ChatMessageServiceImplTests {
                 .containsExactly("message_start", "delta", "delta", "message_end");
 
         ArgumentCaptor<QaTraceLogDO> captor = ArgumentCaptor.forClass(QaTraceLogDO.class);
-        verify(qaTraceLogMapper, times(2)).insert(captor.capture());
+        verify(qaTraceLogMapper, org.mockito.Mockito.atLeast(4)).insert(captor.capture());
         assertThat(captor.getAllValues())
                 .extracting(QaTraceLogDO::getLatencyMs)
                 .allMatch(value -> value != null && value > 0);
@@ -753,6 +760,144 @@ class ChatMessageServiceImplTests {
                 .containsExactly("thinking_delta", "message_start", "delta", "citation", "message_end");
         assertThat(events.get(0).getContent()).isEqualTo("分析知识库...");
         assertThat(events.get(3).getCitations()).hasSize(1);
+    }
+
+    @Test
+    void shouldWriteStructuredTracePayloadsForScopedKnowledgeRoute() throws Exception {
+        IntentNodeTreeResp leaf = new IntentNodeTreeResp()
+                .setIntentCode("biz-kaiti")
+                .setName("开题报告")
+                .setKind(IntentNodeKindEnum.KB.getCode())
+                .setEnabled(1)
+                .setKbId(301L)
+                .setPromptSnippet("请优先参考开题报告知识库");
+        List<RetrievedChunk> recalledChunks = List.of(
+                new RetrievedChunk(101L, 301L, 201L, "开题报告模板", 1, "模板内容", 0.92D, 0D, 0D));
+        List<RetrievedChunk> rerankedChunks = List.of(
+                new RetrievedChunk(101L, 301L, 201L, "开题报告模板", 1, "模板内容", 0.92D, 0.88D, 0.90D));
+        when(intentNodeService.getTree()).thenReturn(List.of(leaf));
+        when(chatModelGateway.scoreLeafIntent("开题报告怎么写", leaf)).thenReturn(0.91D);
+        when(chatModelGateway.rewriteQuestion("开题报告怎么写", List.of())).thenReturn("开题报告怎么写");
+        when(ragRetrievalService.retrieveByKnowledgeBaseIds(any(UserDO.class), eq("开题报告怎么写"), eq(List.of(301L))))
+                .thenReturn(recalledChunks);
+        when(ragRetrievalService.rerank("开题报告怎么写", recalledChunks)).thenReturn(rerankedChunks);
+        when(chatModelGateway.generateAnswer(
+                eq("开题报告怎么写"), eq("开题报告怎么写"), any(List.class), eq(rerankedChunks), eq("请优先参考开题报告知识库")))
+                .thenReturn("可以按研究背景、研究目标、研究方法来组织开题报告。");
+        when(chatModelGateway.currentModelInfo()).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        ChatResp response = chatMessageService.chat(new ChatReq()
+                .setSessionId(10L)
+                .setMessage("开题报告怎么写")
+                .setTraceId("trace-detail-sync"));
+
+        assertThat(response.getKnowledgeHit()).isTrue();
+
+        ArgumentCaptor<QaTraceLogDO> captor = ArgumentCaptor.forClass(QaTraceLogDO.class);
+        verify(qaTraceLogMapper, org.mockito.Mockito.atLeast(5)).insert(captor.capture());
+        Map<String, String> payloadByStage = captor.getAllValues().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        QaTraceLogDO::getStage,
+                        QaTraceLogDO::getPayloadRef,
+                        (left, right) -> right,
+                        java.util.LinkedHashMap::new));
+
+        Map<String, Object> intentPayload = objectMapper.readValue(payloadByStage.get("INTENT"), new TypeReference<>() {
+        });
+        assertThat(intentPayload)
+                .containsEntry("resolvedIntentType", "KB_QA")
+                .containsEntry("fallbackModel", false)
+                .containsEntry("routeSource", "LEAF_SCORE");
+        assertThat((List<Integer>) intentPayload.get("knowledgeBaseIds")).containsExactly(301);
+
+        Map<String, Object> intentScorePayload = objectMapper.readValue(payloadByStage.get("INTENT_SCORE"), new TypeReference<>() {
+        });
+        assertThat(intentScorePayload)
+                .containsEntry("leafCount", 1)
+                .containsEntry("matchedCount", 1);
+        assertThat((List<Integer>) intentScorePayload.get("routedKnowledgeBaseIds")).containsExactly(301);
+        assertThat((List<Map<String, Object>>) intentScorePayload.get("matchedLeaves"))
+                .extracting(item -> item.get("intentCode"))
+                .containsExactly("biz-kaiti");
+    }
+
+    @Test
+    void shouldWriteStructuredTracePayloadsForStreamingKnowledgeRoute() throws Exception {
+        when(chatModelGateway.classifyQuestionIntent("退货规则", List.of())).thenReturn("KB_QA");
+        when(chatModelGateway.rewriteQuestion("退货规则", List.of())).thenReturn("退货规则");
+        List<RetrievedChunk> recalledChunks = List.of(
+                new RetrievedChunk(101L, 301L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0D, 0D));
+        List<RetrievedChunk> rerankedChunks = List.of(
+                new RetrievedChunk(101L, 301L, 201L, "退货政策", 1, "7天无理由退货", 0.82D, 0.50D, 0.71D));
+        when(ragRetrievalService.retrieve(any(UserDO.class), any(String.class))).thenReturn(recalledChunks);
+        when(ragRetrievalService.rerank(any(String.class), any(List.class))).thenReturn(rerankedChunks);
+        when(chatModelGateway.thinkingCandidateIds()).thenReturn(List.of("qwen-thinking"));
+        when(chatModelGateway.tryAcquireStreamingCandidate("qwen-thinking")).thenReturn(true);
+        when(chatModelGateway.streamThinkingKnowledgeAnswerByCandidate(
+                eq("qwen-thinking"), eq("退货规则"), eq("退货规则"), any(List.class), any(List.class), any()))
+                .thenReturn(Flux.just(
+                        new StreamContentRecord("分析知识库...", null),
+                        new StreamContentRecord(null, "根据政策[1]，支持7天退货。")
+                ));
+        when(chatModelGateway.candidateInfo("qwen-thinking")).thenReturn(new ChatModelInfoRecord("bailian", "qwen-plus"));
+
+        List<ChatStreamEventResp> events = chatMessageService.buildChatStreamEvents(new ChatStreamReq()
+                        .setSessionId(10L)
+                        .setMessage("退货规则")
+                        .setDeepThinking(true)
+                        .setTraceId("trace-detail-stream"))
+                .collectList()
+                .block(Duration.ofSeconds(3));
+
+        assertThat(events).extracting(ChatStreamEventResp::getEvent)
+                .containsExactly("thinking_delta", "message_start", "delta", "citation", "message_end");
+
+        ArgumentCaptor<QaTraceLogDO> captor = ArgumentCaptor.forClass(QaTraceLogDO.class);
+        verify(qaTraceLogMapper, org.mockito.Mockito.atLeast(5)).insert(captor.capture());
+        Map<String, String> payloadByStage = captor.getAllValues().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        QaTraceLogDO::getStage,
+                        QaTraceLogDO::getPayloadRef,
+                        (left, right) -> right,
+                        java.util.LinkedHashMap::new));
+
+        Map<String, Object> rewritePayload = objectMapper.readValue(payloadByStage.get("REWRITE"), new TypeReference<>() {
+        });
+        assertThat(rewritePayload)
+                .containsEntry("originalQuestion", "退货规则")
+                .containsEntry("rewrittenQuestion", "退货规则");
+
+        Map<String, Object> intentPayload = objectMapper.readValue(payloadByStage.get("INTENT"), new TypeReference<>() {
+        });
+        assertThat(intentPayload)
+                .containsEntry("resolvedIntentType", "KB_QA")
+                .containsEntry("fallbackModel", true)
+                .containsEntry("routeSource", "MODEL_CLASSIFIER");
+
+        Map<String, Object> retrievePayload = objectMapper.readValue(payloadByStage.get("RETRIEVE"), new TypeReference<>() {
+        });
+        assertThat(retrievePayload)
+                .containsEntry("scope", "GLOBAL")
+                .containsEntry("candidateCount", 1);
+
+        Map<String, Object> rerankPayload = objectMapper.readValue(payloadByStage.get("RERANK"), new TypeReference<>() {
+        });
+        assertThat(rerankPayload)
+                .containsEntry("rerankCount", 1);
+
+        Map<String, Object> candidatePayload = objectMapper.readValue(payloadByStage.get("STREAM_CANDIDATE"), new TypeReference<>() {
+        });
+        assertThat(candidatePayload)
+                .containsEntry("candidateId", "qwen-thinking")
+                .containsEntry("attemptNo", 1)
+                .containsEntry("deepThinking", true);
+
+        Map<String, Object> generatePayload = objectMapper.readValue(payloadByStage.get("GENERATE"), new TypeReference<>() {
+        });
+        assertThat(generatePayload)
+                .containsEntry("answerSource", "STREAM_MODEL")
+                .containsEntry("citationCount", 1)
+                .containsEntry("deepThinking", true);
     }
 
     @Test

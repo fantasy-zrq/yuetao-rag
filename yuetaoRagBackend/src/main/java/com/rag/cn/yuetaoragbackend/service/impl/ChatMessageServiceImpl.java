@@ -1,5 +1,6 @@
 package com.rag.cn.yuetaoragbackend.service.impl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -80,6 +81,7 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
     private final MemoryProperties memoryProperties;
     private final TraceProperties traceProperties;
     private final AiProperties aiProperties;
+    private final ObjectMapper objectMapper;
     private final RedissonClient redissonClient;
     private final ExecutorService chatStreamExecutor;
     private final ChatSessionSummaryService chatSessionSummaryService;
@@ -227,6 +229,12 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             return false;
         }
         activeChatStream.cancel();
+        LinkedHashMap<String, Object> cancelledPayload = new LinkedHashMap<>();
+        cancelledPayload.put("answerSource", TRACE_ANSWER_SOURCE_STREAM_MODEL);
+        cancelledPayload.put("termination", TRACE_TERMINATION_USER_STOP);
+        cancelledPayload.put("staticRefusal", false);
+        writeTrace(requestParam.getTraceId(), requestParam.getSessionId(), userId, TRACE_STAGE_GENERATE,
+                TRACE_STATUS_CANCELLED, TRACE_CANCELLED_LATENCY_MILLIS, tracePayload(cancelledPayload));
         try {
             activeChatStream.emitter().complete();
         } catch (Exception ex) {
@@ -538,9 +546,13 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         String rewrittenQuery = chatModelGateway.rewriteQuestion(question, historyTexts);
         log.info("[CHAT] Query改写: original={}, rewritten={}",
                 shorten(question, QUESTION_LOG_MAX_LENGTH), shorten(rewrittenQuery, REWRITE_LOG_MAX_LENGTH));
+        LinkedHashMap<String, Object> rewritePayload = new LinkedHashMap<>();
+        rewritePayload.put("originalQuestion", shorten(question, TRACE_PAYLOAD_QUESTION_MAX_LENGTH));
+        rewritePayload.put("rewrittenQuestion", shorten(rewrittenQuery, REWRITE_TRACE_MAX_LENGTH));
+        rewritePayload.put("historyCount", historyTexts == null ? 0 : historyTexts.size());
         writeTrace(traceId, sessionId, userId, TRACE_STAGE_REWRITE,
                 TRACE_STATUS_SUCCESS, elapsedMillis(rewriteStart),
-                "rewrittenQuery=" + shorten(rewrittenQuery, REWRITE_TRACE_MAX_LENGTH));
+                tracePayload(rewritePayload));
         return rewrittenQuery;
     }
 
@@ -556,6 +568,17 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 List<Long> knowledgeBaseIds = selectTopKnowledgeBaseIds(kbLeaves);
                 String promptSnippet = mergePromptSnippetsForKnowledgeBases(kbLeaves, knowledgeBaseIds);
                 String promptTemplate = resolveKnowledgePromptTemplate(kbLeaves, knowledgeBaseIds);
+                IntentScoreMatchRecord topLeaf = kbLeaves.get(0);
+                LinkedHashMap<String, Object> intentPayload = new LinkedHashMap<>();
+                intentPayload.put("originalQuestion", shorten(question, TRACE_PAYLOAD_QUESTION_MAX_LENGTH));
+                intentPayload.put("resolvedIntentType", INTENT_TYPE_KB_QA);
+                intentPayload.put("fallbackModel", false);
+                intentPayload.put("routeSource", TRACE_ROUTE_SOURCE_LEAF_SCORE);
+                intentPayload.put("matchedIntentCode", topLeaf.leaf().getIntentCode());
+                intentPayload.put("matchedIntentName", topLeaf.leaf().getName());
+                intentPayload.put("knowledgeBaseIds", knowledgeBaseIds);
+                writeTrace(traceId, sessionId, userId, TRACE_STAGE_INTENT,
+                        TRACE_STATUS_SUCCESS, TRACE_CANCELLED_LATENCY_MILLIS, tracePayload(intentPayload));
                 log.info("[CHAT] 路由决策: route=KB, kbIds={}, leafCount={}", knowledgeBaseIds, kbLeaves.size());
                 return ChatRouteDecisionRecord.kb(INTENT_TYPE_KB_QA, knowledgeBaseIds, promptSnippet, promptTemplate);
             }
@@ -567,6 +590,15 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                         .max(Comparator.comparingDouble(IntentScoreMatchRecord::score))
                         .orElse(null);
                 if (topSystemLeaf != null) {
+                    LinkedHashMap<String, Object> intentPayload = new LinkedHashMap<>();
+                    intentPayload.put("originalQuestion", shorten(question, TRACE_PAYLOAD_QUESTION_MAX_LENGTH));
+                    intentPayload.put("resolvedIntentType", INTENT_TYPE_CHITCHAT);
+                    intentPayload.put("fallbackModel", false);
+                    intentPayload.put("routeSource", TRACE_ROUTE_SOURCE_LEAF_SCORE);
+                    intentPayload.put("matchedIntentCode", topSystemLeaf.leaf().getIntentCode());
+                    intentPayload.put("matchedIntentName", topSystemLeaf.leaf().getName());
+                    writeTrace(traceId, sessionId, userId, TRACE_STAGE_INTENT,
+                            TRACE_STATUS_SUCCESS, TRACE_CANCELLED_LATENCY_MILLIS, tracePayload(intentPayload));
                     log.info("[CHAT] 路由决策: route=SYSTEM, intentCode={}", topSystemLeaf.leaf().getIntentCode());
                     return ChatRouteDecisionRecord.system(INTENT_TYPE_CHITCHAT, topSystemLeaf.leaf());
                 }
@@ -576,8 +608,13 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         long intentStart = System.nanoTime();
         String intentType = chatModelGateway.classifyQuestionIntent(question, historyTexts);
         log.info("[CHAT] 意图分类: intentType={}, elapsed={}ms", intentType, elapsedMillis(intentStart));
+        LinkedHashMap<String, Object> intentPayload = new LinkedHashMap<>();
+        intentPayload.put("originalQuestion", shorten(question, TRACE_PAYLOAD_QUESTION_MAX_LENGTH));
+        intentPayload.put("resolvedIntentType", intentType);
+        intentPayload.put("fallbackModel", true);
+        intentPayload.put("routeSource", TRACE_ROUTE_SOURCE_MODEL_CLASSIFIER);
         writeTrace(traceId, sessionId, userId, TRACE_STAGE_INTENT,
-                TRACE_STATUS_SUCCESS, elapsedMillis(intentStart), "intent=" + intentType + ",fallback=true");
+                TRACE_STATUS_SUCCESS, elapsedMillis(intentStart), tracePayload(intentPayload));
         if (INTENT_TYPE_CHITCHAT.equals(intentType)) {
             return ChatRouteDecisionRecord.chitchat(intentType);
         }
@@ -590,8 +627,13 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         if (routeDecision.isChitchat()) {
             long generateStart = System.nanoTime();
             String answer = chatModelGateway.generateChitchatAnswer(question, historyTexts);
+            LinkedHashMap<String, Object> generatePayload = new LinkedHashMap<>();
+            generatePayload.put("answerSource", TRACE_ANSWER_SOURCE_MODEL_DIRECT);
+            generatePayload.put("resolvedIntentType", INTENT_TYPE_CHITCHAT);
+            generatePayload.put("citationCount", 0);
+            generatePayload.put("staticRefusal", false);
             writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
-                    TRACE_STATUS_SUCCESS, elapsedMillis(generateStart), "intent=" + INTENT_TYPE_CHITCHAT);
+                    TRACE_STATUS_SUCCESS, elapsedMillis(generateStart), tracePayload(generatePayload));
             return new ChatAnswerResultRecord(answer, List.of(), false);
         }
         if (routeDecision.isSystem()) {
@@ -600,16 +642,27 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     ? chatModelGateway.generateChitchatAnswer(
                     question, historyTexts, routeDecision.systemLeaf().getPromptTemplate())
                     : chatModelGateway.generateChitchatAnswer(question, historyTexts);
+            LinkedHashMap<String, Object> generatePayload = new LinkedHashMap<>();
+            generatePayload.put("answerSource", TRACE_ANSWER_SOURCE_SYSTEM_PROMPT);
+            generatePayload.put("resolvedIntentType", INTENT_TYPE_CHITCHAT);
+            generatePayload.put("citationCount", 0);
+            generatePayload.put("staticRefusal", false);
+            generatePayload.put("matchedIntentCode", routeDecision.systemLeaf().getIntentCode());
             writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
                     TRACE_STATUS_SUCCESS, elapsedMillis(generateStart),
-                    "intent=SYSTEM,intentCode=" + routeDecision.systemLeaf().getIntentCode());
+                    tracePayload(generatePayload));
             return new ChatAnswerResultRecord(answer, List.of(), false);
         }
 
         ChatRetrievalPlanRecord retrievalPlan = executeRetrievalPlan(routeDecision, rewrittenQuery, userDO, traceId, sessionId, userId);
         if (retrievalPlan.refusal()) {
+            LinkedHashMap<String, Object> generatePayload = new LinkedHashMap<>();
+            generatePayload.put("answerSource", TRACE_ANSWER_SOURCE_STATIC_REFUSAL);
+            generatePayload.put("citationCount", 0);
+            generatePayload.put("staticRefusal", true);
+            generatePayload.put("reason", STREAM_FAILURE_RERANK_EMPTY);
             writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
-                    TRACE_STATUS_CANCELLED, TRACE_CANCELLED_LATENCY_MILLIS, STREAM_FAILURE_RERANK_EMPTY);
+                    TRACE_STATUS_CANCELLED, TRACE_CANCELLED_LATENCY_MILLIS, tracePayload(generatePayload));
             return new ChatAnswerResultRecord(STATIC_REFUSAL_ANSWER, List.of(), false);
         }
 
@@ -628,9 +681,14 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 historyTexts,
                 retrievalPlan.rerankedChunks(),
                 retrievalPlan.promptSnippet());
+        LinkedHashMap<String, Object> generatePayload = new LinkedHashMap<>();
+        generatePayload.put("answerSource", TRACE_ANSWER_SOURCE_RAG_MODEL);
+        generatePayload.put("citationCount", retrievalPlan.rerankedChunks().size());
+        generatePayload.put("staticRefusal", false);
+        generatePayload.put("knowledgeHit", true);
         writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
                 TRACE_STATUS_SUCCESS, elapsedMillis(generateStart),
-                "citationCount=" + retrievalPlan.rerankedChunks().size());
+                tracePayload(generatePayload));
         return new ChatAnswerResultRecord(answer, IntStream.range(0, retrievalPlan.rerankedChunks().size())
                 .mapToObj(index -> {
                     RetrievedChunk each = retrievalPlan.rerankedChunks().get(index);
@@ -685,9 +743,14 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         List<RetrievedChunk> recalledChunks = ragRetrievalService.retrieveByKnowledgeBaseIds(userDO, rewrittenQuery, knowledgeBaseIds);
         log.info("[CHAT] 向量检索: scope=kbIds={}, candidateCount={}, elapsed={}ms",
                 knowledgeBaseIds, recalledChunks.size(), elapsedMillis(retrieveStart));
+        LinkedHashMap<String, Object> retrievePayload = new LinkedHashMap<>();
+        retrievePayload.put("scope", TRACE_SCOPE_KB_SCOPED);
+        retrievePayload.put("knowledgeBaseIds", knowledgeBaseIds);
+        retrievePayload.put("candidateCount", recalledChunks.size());
+        retrievePayload.put("hits", toTraceChunkEntries(recalledChunks, false));
         writeTrace(traceId, sessionId, userId, TRACE_STAGE_RETRIEVE, TRACE_STATUS_SUCCESS,
                 elapsedMillis(retrieveStart),
-                "candidateCount=" + recalledChunks.size() + ",kbIds=" + knowledgeBaseIds);
+                tracePayload(retrievePayload));
         return recalledChunks;
     }
 
@@ -698,9 +761,13 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         List<RetrievedChunk> recalledChunks = ragRetrievalService.retrieve(userDO, rewrittenQuery);
         log.info("[CHAT] 向量检索: scope={}, candidateCount={}, elapsed={}ms",
                 fallback ? "global-fallback" : "global", recalledChunks.size(), elapsedMillis(retrieveStart));
+        LinkedHashMap<String, Object> retrievePayload = new LinkedHashMap<>();
+        retrievePayload.put("scope", fallback ? TRACE_SCOPE_GLOBAL_FALLBACK : TRACE_SCOPE_GLOBAL);
+        retrievePayload.put("candidateCount", recalledChunks.size());
+        retrievePayload.put("hits", toTraceChunkEntries(recalledChunks, false));
         writeTrace(traceId, sessionId, userId, TRACE_STAGE_RETRIEVE, TRACE_STATUS_SUCCESS,
                 elapsedMillis(retrieveStart),
-                "candidateCount=" + recalledChunks.size() + (fallback ? ",fallback=global" : ",global"));
+                tracePayload(retrievePayload));
         return recalledChunks;
     }
 
@@ -709,8 +776,11 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         long rerankStart = System.nanoTime();
         List<RetrievedChunk> rerankedChunks = ragRetrievalService.rerank(rewrittenQuery, recalledChunks);
         log.info("[CHAT] 重排序: rerankCount={}, elapsed={}ms", rerankedChunks.size(), elapsedMillis(rerankStart));
+        LinkedHashMap<String, Object> rerankPayload = new LinkedHashMap<>();
+        rerankPayload.put("rerankCount", rerankedChunks.size());
+        rerankPayload.put("rerankedHits", toTraceChunkEntries(rerankedChunks, true));
         writeTrace(traceId, sessionId, userId, TRACE_STAGE_RERANK,
-                TRACE_STATUS_SUCCESS, elapsedMillis(rerankStart), "rerankCount=" + rerankedChunks.size());
+                TRACE_STATUS_SUCCESS, elapsedMillis(rerankStart), tracePayload(rerankPayload));
         return rerankedChunks;
     }
 
@@ -860,8 +930,12 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                 sessionDO.getId(), userId, assistantSequenceNo, traceId, answer, modelInfo, null, null);
         updateSessionLastActiveAt(sessionDO.getId());
         chatSessionSummaryService.maybeSummarize(sessionDO.getId(), assistantSequenceNo);
+        LinkedHashMap<String, Object> generatePayload = new LinkedHashMap<>();
+        generatePayload.put("answerSource", TRACE_ANSWER_SOURCE_STATIC_REFUSAL);
+        generatePayload.put("citationCount", 0);
+        generatePayload.put("staticRefusal", true);
         writeTrace(traceId, sessionDO.getId(), userId, TRACE_STAGE_GENERATE,
-                TRACE_STATUS_SUCCESS, elapsedMillis(generateStart), "intent=STATIC_REFUSAL");
+                TRACE_STATUS_SUCCESS, elapsedMillis(generateStart), tracePayload(generatePayload));
         return Flux.just(
                 ChatStreamEventResp.messageStart(traceId, sessionDO.getId(), candidateId, 1),
                 ChatStreamEventResp.delta(traceId, sessionDO.getId(), answer),
@@ -890,8 +964,13 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                                         CandidateStreamProvider streamProvider) {
         if (index >= candidateIds.size()) {
             log.warn("[MODEL] 所有流式候选模型均已失败: candidateCount={}, elapsed={}ms", candidateIds.size(), elapsedMillis(generationStartNanos));
+            LinkedHashMap<String, Object> generatePayload = new LinkedHashMap<>();
+            generatePayload.put("answerSource", TRACE_ANSWER_SOURCE_STREAM_MODEL);
+            generatePayload.put("candidateCount", candidateIds.size());
+            generatePayload.put("staticRefusal", false);
+            generatePayload.put("failure", "ALL_CANDIDATES_EXHAUSTED");
             writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
-                    TRACE_STATUS_FAILED, elapsedMillis(generationStartNanos), "all-candidates-exhausted");
+                    TRACE_STATUS_FAILED, elapsedMillis(generationStartNanos), tracePayload(generatePayload));
             return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
                     BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的聊天模型候选"));
         }
@@ -899,9 +978,15 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         long attemptStart = System.nanoTime();
         if (!chatModelGateway.tryAcquireStreamingCandidate(candidateId)) {
             log.warn("[MODEL] 流式候选模型熔断跳过: candidateId={}, 跳至下一个", candidateId);
+            LinkedHashMap<String, Object> candidatePayload = new LinkedHashMap<>();
+            candidatePayload.put("candidateId", candidateId);
+            candidatePayload.put("attemptNo", attemptNo);
+            candidatePayload.put("reason", "skipped-circuit-open");
+            candidatePayload.put("deepThinking", false);
+            candidatePayload.put("resetIssued", false);
             writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
                     TRACE_STATUS_SKIPPED, elapsedMillis(attemptStart),
-                    "candidateId=" + candidateId + ",reason=skipped-circuit-open");
+                    tracePayload(candidatePayload));
             return streamByCandidate(traceId, sessionId, userId, assistantSequenceNo, question,
                     citations, candidateIds, index + 1, attemptNo, generationStartNanos, streamProvider);
         }
@@ -932,9 +1017,23 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                 sessionId, userId, assistantSequenceNo, traceId, answerBuilder.toString(), modelInfo, null, null);
                         updateSessionLastActiveAt(sessionId);
                         chatSessionSummaryService.maybeSummarize(sessionId, assistantSequenceNo);
+                        LinkedHashMap<String, Object> candidatePayload = new LinkedHashMap<>();
+                        candidatePayload.put("candidateId", candidateId);
+                        candidatePayload.put("attemptNo", attemptNo);
+                        candidatePayload.put("deepThinking", false);
+                        candidatePayload.put("resetIssued", false);
                         writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
                                 TRACE_STATUS_SUCCESS, elapsedMillis(attemptStart),
-                                "candidateId=" + candidateId + ",attemptNo=" + attemptNo);
+                                tracePayload(candidatePayload));
+                        LinkedHashMap<String, Object> generatePayload = new LinkedHashMap<>();
+                        generatePayload.put("answerSource", TRACE_ANSWER_SOURCE_STREAM_MODEL);
+                        generatePayload.put("candidateId", candidateId);
+                        generatePayload.put("attemptNo", attemptNo);
+                        generatePayload.put("citationCount", citations == null ? 0 : citations.size());
+                        generatePayload.put("deepThinking", false);
+                        generatePayload.put("staticRefusal", false);
+                        writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
+                                TRACE_STATUS_SUCCESS, elapsedMillis(generationStartNanos), tracePayload(generatePayload));
                         return assistantMessage;
                     }).flatMapMany(assistantMessage -> {
                         Flux<ChatStreamEventResp> citationFlux = citations == null || citations.isEmpty()
@@ -948,9 +1047,15 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     String reason = resolveStreamFailureReason(ex, sawDelta.get());
                     log.warn("[MODEL] 流式候选模型失败，熔断并切换下一个: candidateId={}, reason={}, error={}",
                             candidateId, reason, ex.getMessage());
+                    LinkedHashMap<String, Object> candidatePayload = new LinkedHashMap<>();
+                    candidatePayload.put("candidateId", candidateId);
+                    candidatePayload.put("attemptNo", attemptNo);
+                    candidatePayload.put("reason", reason);
+                    candidatePayload.put("deepThinking", false);
+                    candidatePayload.put("resetIssued", sawDelta.get());
                     writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
                             TRACE_STATUS_FAILED, elapsedMillis(attemptStart),
-                            "candidateId=" + candidateId + ",reason=" + reason);
+                            tracePayload(candidatePayload));
                     Flux<ChatStreamEventResp> nextFlux = streamByCandidate(traceId, sessionId, userId, assistantSequenceNo,
                             question, citations, candidateIds, index + 1, attemptNo + 1, generationStartNanos, streamProvider);
                     if (sawDelta.get()) {
@@ -984,8 +1089,14 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                                                 CandidateThinkingStreamProvider streamProvider) {
         if (index >= candidateIds.size()) {
             log.warn("[MODEL] 所有深度思考候选模型均已失败: candidateCount={}, elapsed={}ms", candidateIds.size(), elapsedMillis(generationStartNanos));
+            LinkedHashMap<String, Object> generatePayload = new LinkedHashMap<>();
+            generatePayload.put("answerSource", TRACE_ANSWER_SOURCE_STREAM_MODEL);
+            generatePayload.put("candidateCount", candidateIds.size());
+            generatePayload.put("deepThinking", true);
+            generatePayload.put("staticRefusal", false);
+            generatePayload.put("failure", "ALL_CANDIDATES_EXHAUSTED");
             writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
-                    TRACE_STATUS_FAILED, elapsedMillis(generationStartNanos), "all-thinking-candidates-exhausted");
+                    TRACE_STATUS_FAILED, elapsedMillis(generationStartNanos), tracePayload(generatePayload));
             return Flux.just(ChatStreamEventResp.error(traceId, sessionId,
                     BaseErrorCode.SERVICE_ERROR.code(), "当前没有可用的深度思考模型候选"));
         }
@@ -993,9 +1104,15 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         long attemptStart = System.nanoTime();
         if (!chatModelGateway.tryAcquireStreamingCandidate(candidateId)) {
             log.warn("[MODEL] 深度思考候选模型熔断跳过: candidateId={}, 跳至下一个", candidateId);
+            LinkedHashMap<String, Object> candidatePayload = new LinkedHashMap<>();
+            candidatePayload.put("candidateId", candidateId);
+            candidatePayload.put("attemptNo", attemptNo);
+            candidatePayload.put("reason", "skipped-circuit-open");
+            candidatePayload.put("deepThinking", true);
+            candidatePayload.put("resetIssued", false);
             writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
                     TRACE_STATUS_SKIPPED, elapsedMillis(attemptStart),
-                    "candidateId=" + candidateId + ",reason=skipped-circuit-open");
+                    tracePayload(candidatePayload));
             return streamThinkingByCandidate(traceId, sessionId, userId, assistantSequenceNo, question,
                     citations, candidateIds, index + 1, attemptNo, generationStartNanos, streamProvider);
         }
@@ -1042,9 +1159,25 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                                 thinkingBuilder.toString(), thinkingDurationMs);
                         updateSessionLastActiveAt(sessionId);
                         chatSessionSummaryService.maybeSummarize(sessionId, assistantSequenceNo);
+                        LinkedHashMap<String, Object> candidatePayload = new LinkedHashMap<>();
+                        candidatePayload.put("candidateId", candidateId);
+                        candidatePayload.put("attemptNo", attemptNo);
+                        candidatePayload.put("deepThinking", true);
+                        candidatePayload.put("thinkingProvided", thinkingDurationMs != null);
+                        candidatePayload.put("thinkingDurationMs", thinkingDurationMs);
                         writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
                                 TRACE_STATUS_SUCCESS, elapsedMillis(attemptStart),
-                                "candidateId=" + candidateId + ",attemptNo=" + attemptNo + ",thinking=" + (thinkingDurationMs != null));
+                                tracePayload(candidatePayload));
+                        LinkedHashMap<String, Object> generatePayload = new LinkedHashMap<>();
+                        generatePayload.put("answerSource", TRACE_ANSWER_SOURCE_STREAM_MODEL);
+                        generatePayload.put("candidateId", candidateId);
+                        generatePayload.put("attemptNo", attemptNo);
+                        generatePayload.put("citationCount", citations == null ? 0 : citations.size());
+                        generatePayload.put("deepThinking", true);
+                        generatePayload.put("thinkingDurationMs", thinkingDurationMs);
+                        generatePayload.put("staticRefusal", false);
+                        writeTrace(traceId, sessionId, userId, TRACE_STAGE_GENERATE,
+                                TRACE_STATUS_SUCCESS, elapsedMillis(generationStartNanos), tracePayload(generatePayload));
                         return assistantMessage;
                     }).flatMapMany(assistantMessage -> {
                         Flux<ChatStreamEventResp> citationFlux = citations == null || citations.isEmpty()
@@ -1058,9 +1191,15 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
                     String reason = resolveStreamFailureReason(ex, sawDelta.get());
                     log.warn("[MODEL] 深度思考候选模型失败，熔断并切换下一个: candidateId={}, reason={}, error={}",
                             candidateId, reason, ex.getMessage());
+                    LinkedHashMap<String, Object> candidatePayload = new LinkedHashMap<>();
+                    candidatePayload.put("candidateId", candidateId);
+                    candidatePayload.put("attemptNo", attemptNo);
+                    candidatePayload.put("reason", reason);
+                    candidatePayload.put("deepThinking", true);
+                    candidatePayload.put("resetIssued", sawDelta.get());
                     writeTrace(traceId, sessionId, userId, TRACE_STAGE_STREAM_CANDIDATE,
                             TRACE_STATUS_FAILED, elapsedMillis(attemptStart),
-                            "candidateId=" + candidateId + ",reason=" + reason);
+                            tracePayload(candidatePayload));
                     Flux<ChatStreamEventResp> nextFlux = streamThinkingByCandidate(traceId, sessionId, userId, assistantSequenceNo,
                             question, citations, candidateIds, index + 1, attemptNo + 1, generationStartNanos, streamProvider);
                     if (sawDelta.get()) {
@@ -1164,6 +1303,73 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         }
     }
 
+    /**
+     * Trace payload 统一落成紧凑 JSON，详情页即可直接按字段渲染，而不是再猜测字符串格式。
+     */
+    private String tracePayload(LinkedHashMap<String, Object> payload) {
+        if (payload == null || payload.isEmpty()) {
+            return null;
+        }
+        LinkedHashMap<String, Object> compactPayload = new LinkedHashMap<>(payload);
+        String json = writeTracePayloadJson(compactPayload);
+        if (json.length() <= TRACE_PAYLOAD_MAX_LENGTH) {
+            return json;
+        }
+        compactPayload.remove("hits");
+        compactPayload.remove("rerankedHits");
+        compactPayload.remove("matchedLeaves");
+        compactPayload.put("truncated", true);
+        json = writeTracePayloadJson(compactPayload);
+        if (json.length() <= TRACE_PAYLOAD_MAX_LENGTH) {
+            return json;
+        }
+        trimTracePayloadField(compactPayload, "originalQuestion");
+        trimTracePayloadField(compactPayload, "rewrittenQuestion");
+        trimTracePayloadField(compactPayload, "question");
+        json = writeTracePayloadJson(compactPayload);
+        if (json.length() <= TRACE_PAYLOAD_MAX_LENGTH) {
+            return json;
+        }
+        compactPayload.clear();
+        compactPayload.put("truncated", true);
+        compactPayload.put("keys", payload.keySet());
+        return writeTracePayloadJson(compactPayload);
+    }
+
+    private String writeTracePayloadJson(Map<String, Object> payload) {
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (Exception ex) {
+            log.warn("序列化 trace payload 失败: keys={}", payload.keySet(), ex);
+            return payload.toString();
+        }
+    }
+
+    private void trimTracePayloadField(Map<String, Object> payload, String fieldName) {
+        Object fieldValue = payload.get(fieldName);
+        if (fieldValue instanceof String value) {
+            payload.put(fieldName, shorten(value, TRACE_PAYLOAD_TEXT_MAX_LENGTH));
+        }
+    }
+
+    private List<Map<String, Object>> toTraceChunkEntries(List<RetrievedChunk> chunks, boolean preferFinalScore) {
+        if (chunks == null || chunks.isEmpty()) {
+            return List.of();
+        }
+        return chunks.stream()
+                .limit(TRACE_PAYLOAD_ITEM_LIMIT)
+                .map(chunk -> {
+                    Map<String, Object> entry = new LinkedHashMap<>();
+                    entry.put("documentId", chunk.documentId());
+                    entry.put("documentTitle", shorten(chunk.documentTitle(), TRACE_PAYLOAD_TEXT_MAX_LENGTH));
+                    entry.put("chunkNo", chunk.chunkNo());
+                    entry.put("score", preferFinalScore && chunk.finalScore() != null ? chunk.finalScore() : chunk.vectorScore());
+                    entry.put("knowledgeBaseId", chunk.knowledgeBaseId());
+                    return entry;
+                })
+                .toList();
+    }
+
     private long elapsedMillis(long startNanos) {
         long elapsedNanos = System.nanoTime() - startNanos;
         if (elapsedNanos <= 0) {
@@ -1185,6 +1391,13 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
         List<IntentNodeTreeResp> leaves = collectLeafNodes(tree);
         log.info("[INTENT] 加载意图树: leafCount={}", leaves.size());
         if (leaves.isEmpty()) {
+            LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+            payload.put("question", shorten(question, TRACE_PAYLOAD_QUESTION_MAX_LENGTH));
+            payload.put("leafCount", 0);
+            payload.put("matchedCount", 0);
+            payload.put("matchedLeaves", List.of());
+            writeTrace(traceId, sessionId, userId, TRACE_STAGE_INTENT_SCORE, TRACE_STATUS_SUCCESS,
+                    TRACE_CANCELLED_LATENCY_MILLIS, tracePayload(payload));
             return List.of();
         }
         long intentScoreStart = System.nanoTime();
@@ -1201,17 +1414,38 @@ public class ChatMessageServiceImpl extends ServiceImpl<ChatMessageMapper, ChatM
             }
         }
         matches.sort(Comparator.comparingDouble(IntentScoreMatchRecord::score).reversed());
+        List<Long> routedKnowledgeBaseIds = selectTopKnowledgeBaseIds(matches.stream()
+                .filter(each -> IntentNodeKindEnum.KB.getCode().equals(each.leaf().getKind()))
+                .filter(each -> each.leaf().getKbId() != null)
+                .toList());
+        List<Map<String, Object>> matchedLeaves = matches.stream()
+                .limit(TRACE_PAYLOAD_ITEM_LIMIT)
+                .map(each -> {
+                    Map<String, Object> entry = new LinkedHashMap<>();
+                    entry.put("intentCode", each.leaf().getIntentCode());
+                    entry.put("intentName", shorten(each.leaf().getName(), TRACE_PAYLOAD_TEXT_MAX_LENGTH));
+                    entry.put("score", each.score());
+                    entry.put("kind", each.leaf().getKind());
+                    entry.put("kbId", each.leaf().getKbId());
+                    return entry;
+                })
+                .toList();
+        LinkedHashMap<String, Object> payload = new LinkedHashMap<>();
+        payload.put("question", shorten(question, TRACE_PAYLOAD_QUESTION_MAX_LENGTH));
+        payload.put("leafCount", leaves.size());
+        payload.put("matchedCount", matches.size());
+        payload.put("matchedLeaves", matchedLeaves);
+        payload.put("routedKnowledgeBaseIds", routedKnowledgeBaseIds);
         if (matches.isEmpty()) {
             log.info("[INTENT] 无匹配叶子节点");
             writeTrace(traceId, sessionId, userId, TRACE_STAGE_INTENT_SCORE, TRACE_STATUS_SUCCESS,
-                    elapsedMillis(intentScoreStart), "leafCount=" + leaves.size() + ",no-match");
+                    elapsedMillis(intentScoreStart), tracePayload(payload));
         } else {
             log.info("[INTENT] 命中叶子节点: {}", matches.stream()
                     .map(each -> each.leaf().getIntentCode() + "=" + each.score())
                     .toList());
             writeTrace(traceId, sessionId, userId, TRACE_STAGE_INTENT_SCORE, TRACE_STATUS_SUCCESS,
-                    elapsedMillis(intentScoreStart),
-                    "matchCount=" + matches.size() + ",top=" + matches.get(0).leaf().getIntentCode());
+                    elapsedMillis(intentScoreStart), tracePayload(payload));
         }
         return matches;
     }

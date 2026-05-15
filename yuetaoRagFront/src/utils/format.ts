@@ -47,8 +47,13 @@ export function statusText(value?: string | null) {
     ARCHIVED: "归档",
     PENDING: "待处理",
     PARSING: "解析中",
+    RUNNING: "执行中",
     SUCCESS: "成功",
-    FAILED: "失败"
+    FAILED: "失败",
+    TIMEOUT: "超时",
+    SKIPPED: "跳过",
+    CANCELLED: "已取消",
+    "未执行": "未执行"
   };
   return value ? map[value] || value : "-";
 }

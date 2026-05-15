@@ -160,5 +160,6 @@ app:
     intent-node-schema-patch-enabled: false
   trace:
     enabled: true
-    log-payload: false
+    # 是否记录每个 RAG 阶段的结构化详情载荷；关闭后详情页只能看到阶段骨架，无法展示原问题、改写、命中 KB、重排结果等明细。
+    log-payload: true
     retain-days: 30

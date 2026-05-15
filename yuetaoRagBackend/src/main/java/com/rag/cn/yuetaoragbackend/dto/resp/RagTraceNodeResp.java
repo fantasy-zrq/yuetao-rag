@@ -1,6 +1,7 @@
 package com.rag.cn.yuetaoragbackend.dto.resp;
 
 import java.util.Date;
+import java.util.Map;
 import lombok.Data;
 import lombok.experimental.Accessors;
 
@@ -27,6 +28,10 @@ public class RagTraceNodeResp {
     private String status;
 
     private String errorMessage;
+
+    private String payloadRef;
+
+    private Map<String, Object> details;
 
     private Long durationMs;
 

@@ -22,6 +22,8 @@ export interface RagTraceNode {
   nodeName?: string | null;
   status?: string | null;
   errorMessage?: string | null;
+  payloadRef?: string | null;
+  details?: Record<string, unknown> | null;
   durationMs?: number | null;
   startTime?: string | null;
   endTime?: string | null;

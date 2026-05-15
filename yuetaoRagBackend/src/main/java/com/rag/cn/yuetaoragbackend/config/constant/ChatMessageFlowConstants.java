@@ -20,6 +20,9 @@ public final class ChatMessageFlowConstants {
     public static final int REWRITE_TRACE_MAX_LENGTH = 240;
     public static final int CITATION_SNIPPET_MAX_LENGTH = 120;
     public static final int TRACE_PAYLOAD_MAX_LENGTH = 512;
+    public static final int TRACE_PAYLOAD_ITEM_LIMIT = 3;
+    public static final int TRACE_PAYLOAD_TEXT_MAX_LENGTH = 24;
+    public static final int TRACE_PAYLOAD_QUESTION_MAX_LENGTH = 120;
 
     public static final String ROLE_USER = "USER";
     public static final String ROLE_ASSISTANT = "ASSISTANT";
@@ -41,6 +44,18 @@ public final class ChatMessageFlowConstants {
     public static final String TRACE_STATUS_FAILED = "FAILED";
     public static final String TRACE_STATUS_SKIPPED = "SKIPPED";
     public static final String TRACE_STATUS_CANCELLED = "CANCELLED";
+
+    public static final String TRACE_ROUTE_SOURCE_LEAF_SCORE = "LEAF_SCORE";
+    public static final String TRACE_ROUTE_SOURCE_MODEL_CLASSIFIER = "MODEL_CLASSIFIER";
+    public static final String TRACE_SCOPE_KB_SCOPED = "KB_SCOPED";
+    public static final String TRACE_SCOPE_GLOBAL = "GLOBAL";
+    public static final String TRACE_SCOPE_GLOBAL_FALLBACK = "GLOBAL_FALLBACK";
+    public static final String TRACE_ANSWER_SOURCE_MODEL_DIRECT = "MODEL_DIRECT";
+    public static final String TRACE_ANSWER_SOURCE_SYSTEM_PROMPT = "SYSTEM_PROMPT";
+    public static final String TRACE_ANSWER_SOURCE_RAG_MODEL = "RAG_MODEL";
+    public static final String TRACE_ANSWER_SOURCE_STREAM_MODEL = "STREAM_MODEL";
+    public static final String TRACE_ANSWER_SOURCE_STATIC_REFUSAL = "STATIC_REFUSAL";
+    public static final String TRACE_TERMINATION_USER_STOP = "USER_STOP";
 
     public static final String STREAM_FAILURE_IDLE_TIMEOUT = "idle-timeout";
     public static final String STREAM_FAILURE_FIRST_TOKEN_TIMEOUT = "first-token-timeout";
